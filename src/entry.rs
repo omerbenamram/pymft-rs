@@ -37,57 +37,19 @@ impl PyMftEntry {
         let gil = Python::acquire_gil();
         let py = gil.python();
 
+        let allocated: Vec<Result<MftAttribute, mft::err::Error>> =
+            self.inner.iter_attributes().collect();
+
         Py::new(
             py,
             PyMftAttributesIter {
-                inner: Box::new(self.inner.iter_attributes()),
+                inner: Box::new(
+                    allocated
+                        .into_iter()
+                        .map(PyMftAttributesIter::attribute_to_pyobject),
+                ),
             },
         )
-    }
-}
-
-#[pyproto]
-impl PyIterProtocol for PyMftAttributesIter {
-    fn __iter__(mut slf: PyRefMut<Self>) -> PyResult<PyMftEntriesIterator> {
-        Ok(slf.into())
-    }
-    fn __next__(mut slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
-        slf.next()
-    }
-}
-
-#[pyclass]
-pub struct PyMftAttributesIter {
-    inner: Box<Iterator<Item = Result<MftAttribute, mft::err::Error>>>,
-}
-
-impl PyMftAttributesIter {
-    fn attribute_to_pyobject(
-        &mut self,
-        attribute_result: Result<MftAttribute, mft::err::Error>,
-        py: Python,
-    ) -> PyObject {
-        match attribute_result {
-            Ok(attribute) => {
-                match PyMftAttribute::from_mft_attribute(py, attribute)
-                    .map(|entry| entry.into_object(py))
-                {
-                    Ok(py_mft_entry) => py_mft_entry,
-                    Err(e) => e.into_object(py),
-                }
-            }
-            Err(e) => PyErr::from(PyMftError(e)).into_object(py),
-        }
-    }
-
-    fn next(&mut self) -> PyResult<Option<PyObject>> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        Ok(self
-            .inner
-            .next()
-            .map(|attribute| self.attribute_to_pyobject(attribute, py)))
     }
 }
 
@@ -119,5 +81,44 @@ impl PyMftEntry {
                 full_path,
             },
         )
+    }
+}
+
+#[pyclass]
+pub struct PyMftAttributesIter {
+    inner: Box<Iterator<Item = PyObject> + Send>,
+}
+
+#[pyproto]
+impl PyIterProtocol for PyMftAttributesIter {
+    fn __iter__(slf: PyRefMut<Self>) -> PyResult<Py<PyMftAttributesIter>> {
+        Ok(slf.into())
+    }
+
+    fn __next__(mut slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
+        slf.next()
+    }
+}
+
+impl PyMftAttributesIter {
+    fn attribute_to_pyobject(attribute_result: Result<MftAttribute, mft::err::Error>) -> PyObject {
+        let gil = Python::acquire_gil();
+        let py = gil.python();
+
+        match attribute_result {
+            Ok(attribute) => {
+                match PyMftAttribute::from_mft_attribute(py, attribute)
+                    .map(|entry| entry.into_object(py))
+                {
+                    Ok(py_mft_entry) => py_mft_entry,
+                    Err(e) => e.into_object(py),
+                }
+            }
+            Err(e) => PyErr::from(PyMftError(e)).into_object(py),
+        }
+    }
+
+    fn next(&mut self) -> PyResult<Option<PyObject>> {
+        Ok(self.inner.next())
     }
 }

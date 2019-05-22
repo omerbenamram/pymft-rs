@@ -27,5 +27,5 @@ def test_iter_attributes(sample_mft):
 
         sample_record: PyMftEntry = next(parser.entries())
 
-        print(list(sample_record.attributes()))
-        assert False
+        l = list(sample_record.attributes())
+        assert len(l) == 4
