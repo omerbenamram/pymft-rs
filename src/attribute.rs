@@ -1,5 +1,5 @@
 use mft::attribute::header::ResidentialHeader;
-use mft::attribute::{MftAttributeContent, MftAttributeType};
+use mft::attribute::{MftAttributeContent};
 
 use mft::attribute::raw::RawAttribute;
 use mft::attribute::x40::ObjectIdAttr;
@@ -10,7 +10,7 @@ use mft::{FileNameAttr, MftAttribute, StandardInfoAttr};
 use num_traits::cast::ToPrimitive;
 
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDateTime, PyString, PyTzInfo};
+use pyo3::types::{PyBytes, PyDateTime};
 use pyo3::{ffi, Py, PyResult, Python};
 
 #[pyclass]

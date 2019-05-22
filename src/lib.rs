@@ -167,7 +167,7 @@ impl PyMftEntriesIterator {
         match entry_result {
             Ok(entry) => match serde_json::to_string(&entry) {
                 Ok(s) => PyString::new(py, &s).into_object(py),
-                Err(e) => {
+                Err(_e) => {
                     PyErr::new::<RuntimeError, _>("JSON Serialization failed").into_object(py)
                 }
             },
@@ -182,7 +182,7 @@ impl PyMftEntriesIterator {
             Ok(entry) => {
                 match writer.serialize(FlatMftEntryWithName::from_entry(&entry, &mut self.inner)) {
                     Ok(()) => {}
-                    Err(e) => {
+                    Err(_e) => {
                         return PyErr::new::<RuntimeError, _>("CSV Serialization failed").into_object(py)
                     }
                 }
