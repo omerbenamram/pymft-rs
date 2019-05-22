@@ -25,12 +25,12 @@ use crate::attribute::{
     PyMftAttribute, PyMftAttributeOther, PyMftAttributeX10, PyMftAttributeX30, PyMftAttributeX40,
     PyMftAttributeX80, PyMftAttributeX90,
 };
+use crate::entry::PyMftAttributesIter;
 use crate::err::PyMftError;
 use crate::utils::FileOrFileLike;
 use csv::Writer;
 use mft::csv::FlatMftEntryWithName;
 use pyo3::types::{PyBytes, PyString};
-use crate::entry::PyMftAttributesIter;
 
 pub trait ReadSeek: Read + Seek {
     fn tell(&mut self) -> io::Result<u64> {
@@ -97,7 +97,7 @@ impl PyMftParser {
     /// --
     ///
     /// Returns an iterator that yields mft entries as JSON.
-    fn entries_(&mut self) -> PyResult<PyMftEntriesIterator> {
+    fn entries_json(&mut self) -> PyResult<PyMftEntriesIterator> {
         self.records_iterator(Output::JSON)
     }
 
@@ -180,7 +180,12 @@ impl PyMftEntriesIterator {
 
         match entry_result {
             Ok(entry) => {
-                writer.serialize(FlatMftEntryWithName::from_entry(&entry, &mut self.inner));
+                match writer.serialize(FlatMftEntryWithName::from_entry(&entry, &mut self.inner)) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        return PyErr::new::<RuntimeError, _>("CSV Serialization failed").into_object(py)
+                    }
+                }
                 PyBytes::new(py, &writer.into_inner().expect("IntoInner")).into_object(py)
             }
             Err(e) => PyErr::from(e).into_object(py),
@@ -202,7 +207,13 @@ impl PyMftEntriesIterator {
 
         self.current_record += 1;
 
-        Ok(Some(self.entry_to_pyobject(entry_result, py)))
+        let entry_result = match self.output_format {
+            Output::Python => self.entry_to_pyobject(entry_result, py),
+            Output::JSON => self.entry_to_json(entry_result, py),
+            Output::CSV => self.entry_to_csv(entry_result, py),
+        };
+
+        Ok(Some(entry_result))
     }
 }
 
