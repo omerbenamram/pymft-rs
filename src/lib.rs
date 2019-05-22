@@ -1,5 +1,9 @@
 #![allow(clippy::new_ret_no_self)]
+#![feature(custom_attribute)]
+
 mod entry;
+pub(crate) mod err;
+mod utils;
 
 pub use entry::PyMftEntry;
 
@@ -13,6 +17,8 @@ use pyo3::types::PyString;
 use pyo3::PyIterProtocol;
 use pyo3_file::PyFileLikeObject;
 
+use crate::err::PyMftError;
+use crate::utils::FileOrFileLike;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::{fs, io};
@@ -25,50 +31,10 @@ pub trait ReadSeek: Read + Seek {
 
 impl<T: Read + Seek> ReadSeek for T {}
 
-struct PyMftError(mft::err::Error);
-
-impl From<PyMftError> for PyErr {
-    fn from(err: PyMftError) -> Self {
-        match err.0 {
-            mft::err::Error::IoError {
-                source,
-                backtrace: _,
-            } => source.into(),
-            _ => PyErr::new::<RuntimeError, _>(format!("{}", err.0)),
-        }
-    }
-}
-
 #[derive(Copy, Clone, PartialOrd, PartialEq)]
 pub enum OutputFormat {
     CSV,
     XML,
-}
-
-#[derive(Debug)]
-enum FileOrFileLike {
-    File(String),
-    FileLike(PyFileLikeObject),
-}
-
-impl FileOrFileLike {
-    pub fn from_pyobject(path_or_file_like: PyObject) -> PyResult<FileOrFileLike> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        // is a path
-        if let Ok(string_ref) = path_or_file_like.cast_as::<PyString>(py) {
-            return Ok(FileOrFileLike::File(
-                string_ref.to_string_lossy().to_string(),
-            ));
-        }
-
-        // We only need read + seek
-        match PyFileLikeObject::with_requirements(path_or_file_like, true, false, true) {
-            Ok(f) => Ok(FileOrFileLike::FileLike(f)),
-            Err(e) => Err(e),
-        }
-    }
 }
 
 #[pyclass]
@@ -90,7 +56,7 @@ impl PyMftParser {
         let (boxed_read_seek, size) = match file_or_file_like {
             FileOrFileLike::File(s) => {
                 let file = File::open(s)?;
-                let size = fs::metadata(file)?.len();
+                let size = file.metadata()?.len();
 
                 let reader = BufReader::with_capacity(4096, file);
 
@@ -99,7 +65,7 @@ impl PyMftParser {
             FileOrFileLike::FileLike(f) => (Box::new(f) as Box<dyn ReadSeek>, None),
         };
 
-        let parser = MftParser::from_read_seek(boxed_read_seek, size).map_err(PyEvtxError)?;
+        let parser = MftParser::from_read_seek(boxed_read_seek, size).map_err(PyMftError)?;
 
         obj.init({
             PyMftParser {
@@ -138,89 +104,58 @@ impl PyMftParser {
             }
         };
 
+        let n_records = inner.get_entry_count();
+
         Ok(PyMftEntriesIterator {
-            inner: inner.iter_entries().into_iter(),
-            records: None,
+            inner,
+            total_number_of_records: n_records,
+            current_record: 0,
             output_format,
         })
     }
 }
 
-fn record_to_pydict(record: SerializedEvtxRecord, py: Python) -> PyResult<&PyDict> {
-    let pyrecord = PyDict::new(py);
-
-    pyrecord.set_item("event_record_id", record.event_record_id)?;
-    pyrecord.set_item("timestamp", format!("{}", record.timestamp))?;
-    pyrecord.set_item("data", record.data)?;
-    Ok(pyrecord)
-}
-
-fn record_to_pyobject(
-    r: Result<SerializedEvtxRecord, evtx::err::Error>,
-    py: Python,
-) -> PyResult<PyObject> {
-    match r {
-        Ok(r) => match record_to_pydict(r, py) {
-            Ok(dict) => Ok(dict.to_object(py)),
-            Err(e) => Ok(e.to_object(py)),
-        },
-        Err(e) => Err(PyEvtxError(e).into()),
-    }
-}
-
-
-
 #[pyclass]
 pub struct PyMftEntriesIterator {
-    inner: IntoIterChunks<Box<dyn ReadSeek>>,
-    records: Option<Vec<Result<MftEntry, mft::err::Error>>>,
+    inner: MftParser<Box<dyn ReadSeek>>,
+    total_number_of_records: u64,
+    current_record: u64,
     output_format: OutputFormat,
 }
 
 impl PyMftEntriesIterator {
+    fn entry_to_pyobject(
+        &mut self,
+        entry_result: Result<MftEntry, PyMftError>,
+        py: Python,
+    ) -> PyObject {
+        match entry_result {
+            Ok(entry) => {
+                match PyMftEntry::from_mft_entry(py, entry, &mut self.inner)
+                    .map(|entry| entry.into_object(py))
+                {
+                    Ok(py_mft_entry) => py_mft_entry,
+                    Err(e) => e.into_object(py),
+                }
+            }
+            Err(e) => PyErr::from(e).into_object(py),
+        }
+    }
+
     fn next(&mut self) -> PyResult<Option<PyObject>> {
         let gil = Python::acquire_gil();
         let py = gil.python();
 
-        loop {
-            if let Some(record) = self.records.as_mut().and_then(Vec::pop) {
-                return record_to_pyobject(record, py).map(Some);
-            }
-
-            let chunk = self.inner.next();
-
-            match chunk {
-                None => return Ok(None),
-                Some(chunk_result) => match chunk_result {
-                    Err(e) => {
-                        return Err(PyEvtxError(e).into());
-                    }
-                    Ok(mut chunk) => {
-                        let parsed_chunk = chunk.parse(&self.settings);
-
-                        match parsed_chunk {
-                            Err(e) => {
-                                return Err(PyEvtxError(e).into());
-                            }
-                            Ok(mut chunk) => {
-                                self.records = match self.output_format {
-                                    OutputFormat::XML => Some(
-                                        chunk
-                                            .iter_serialized_records::<XmlOutput<Vec<u8>>>()
-                                            .collect(),
-                                    ),
-                                    OutputFormat::JSON => Some(
-                                        chunk
-                                            .iter_serialized_records::<JsonOutput<Vec<u8>>>()
-                                            .collect(),
-                                    ),
-                                };
-                            }
-                        }
-                    }
-                },
-            }
+        if self.current_record == self.total_number_of_records {
+            return Ok(None);
         }
+
+        let entry_result = self
+            .inner
+            .get_entry(self.current_record)
+            .map_err(PyMftError);
+
+        Ok(Some(self.entry_to_pyobject(entry_result, py)))
     }
 }
 
