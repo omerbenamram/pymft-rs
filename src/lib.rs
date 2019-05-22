@@ -7,21 +7,21 @@ mod utils;
 
 pub use entry::PyMftEntry;
 
-use mft::{MftAttribute, MftEntry, MftParser};
+use mft::{MftEntry, MftParser};
 
 use pyo3::exceptions::{NotImplementedError, RuntimeError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
-use pyo3::types::PyString;
+
+
 
 use pyo3::PyIterProtocol;
-use pyo3_file::PyFileLikeObject;
+
 
 use crate::err::PyMftError;
 use crate::utils::FileOrFileLike;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
-use std::{fs, io};
+use std::{io};
 
 pub trait ReadSeek: Read + Seek {
     fn tell(&mut self) -> io::Result<u64> {
@@ -95,7 +95,7 @@ impl PyMftParser {
 
 impl PyMftParser {
     fn records_iterator(&mut self, output_format: OutputFormat) -> PyResult<PyMftEntriesIterator> {
-        let mut inner = match self.inner.take() {
+        let inner = match self.inner.take() {
             Some(inner) => inner,
             None => {
                 return Err(PyErr::new::<RuntimeError, _>(
