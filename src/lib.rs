@@ -28,7 +28,9 @@ use crate::attribute::{
 use crate::err::PyMftError;
 use crate::utils::FileOrFileLike;
 use csv::Writer;
-use pyo3::types::PyString;
+use mft::csv::FlatMftEntryWithName;
+use pyo3::types::{PyBytes, PyString};
+use crate::entry::PyMftAttributesIter;
 
 pub trait ReadSeek: Read + Seek {
     fn tell(&mut self) -> io::Result<u64> {
@@ -38,9 +40,9 @@ pub trait ReadSeek: Read + Seek {
 
 impl<T: Read + Seek> ReadSeek for T {}
 
-pub enum Output<W: Write> {
+pub enum Output {
     Python,
-    CSV(Writer<W>),
+    CSV,
     JSON,
 }
 
@@ -104,17 +106,12 @@ impl PyMftParser {
     ///
     /// Returns an iterator that yields mft entries CSV lines.
     fn entries_csv(&mut self) -> PyResult<PyMftEntriesIterator> {
-        let inner_buffer = Vec::new();
-        let writer = csv::Writer::from_writer(inner_buffer);
-        self.records_iterator(Output::CSV(Box::new(writer)))
+        self.records_iterator(Output::CSV)
     }
 }
 
 impl PyMftParser {
-    fn records_iterator(
-        &mut self,
-        output_format: Output<impl Write>,
-    ) -> PyResult<PyMftEntriesIterator> {
+    fn records_iterator(&mut self, output_format: Output) -> PyResult<PyMftEntriesIterator> {
         let inner = match self.inner.take() {
             Some(inner) => inner,
             None => {
@@ -140,7 +137,7 @@ pub struct PyMftEntriesIterator {
     inner: MftParser<Box<dyn ReadSeek>>,
     total_number_of_records: u64,
     current_record: u64,
-    output_format: Output<Box<dyn Write>>,
+    output_format: Output,
 }
 
 impl PyMftEntriesIterator {
@@ -168,20 +165,24 @@ impl PyMftEntriesIterator {
         py: Python,
     ) -> PyObject {
         match entry_result {
-            Ok(entry) => match serde_json::to_string(entry) {
+            Ok(entry) => match serde_json::to_string(&entry) {
                 Ok(s) => PyString::new(py, &s).into_object(py),
-                Err(e) => PyErr::from(e).into_object(py),
+                Err(e) => {
+                    PyErr::new::<RuntimeError, _>("JSON Serialization failed").into_object(py)
+                }
             },
             Err(e) => PyErr::from(e).into_object(py),
         }
     }
 
     fn entry_to_csv(&mut self, entry_result: Result<MftEntry, PyMftError>, py: Python) -> PyObject {
+        let mut writer = Writer::from_writer(Vec::new());
+
         match entry_result {
-            Ok(entry) => match csv::to_string(entry) {
-                Ok(s) => PyString::new(py, &s).into_object(py),
-                Err(e) => PyErr::from(e).into_object(py),
-            },
+            Ok(entry) => {
+                writer.serialize(FlatMftEntryWithName::from_entry(&entry, &mut self.inner));
+                PyBytes::new(py, &writer.into_inner().expect("IntoInner")).into_object(py)
+            }
             Err(e) => PyErr::from(e).into_object(py),
         }
     }
@@ -237,6 +238,7 @@ fn mft(_py: Python, m: &PyModule) -> PyResult<()> {
 
     // Attributes
     m.add_class::<PyMftAttribute>()?;
+    m.add_class::<PyMftAttributesIter>()?;
     m.add_class::<PyMftAttributeX10>()?;
     m.add_class::<PyMftAttributeX30>()?;
     m.add_class::<PyMftAttributeX40>()?;

@@ -40,7 +40,7 @@ impl PyMftEntry {
         Py::new(
             py,
             PyMftAttributesIter {
-                inner: self.inner.iter_attributes(),
+                inner: Box::new(self.inner.iter_attributes()),
             },
         )
     }
@@ -51,20 +51,20 @@ impl PyIterProtocol for PyMftAttributesIter {
     fn __iter__(mut slf: PyRefMut<Self>) -> PyResult<PyMftEntriesIterator> {
         Ok(slf.into())
     }
-    fn __next__(slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
+    fn __next__(mut slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
         slf.next()
     }
 }
 
 #[pyclass]
-struct PyMftAttributesIter {
-    inner: Box<Iterator<Item = Result<MftAttribute, PyMftError>>>,
+pub struct PyMftAttributesIter {
+    inner: Box<Iterator<Item = Result<MftAttribute, mft::err::Error>>>,
 }
 
 impl PyMftAttributesIter {
     fn attribute_to_pyobject(
         &mut self,
-        attribute_result: Result<MftAttribute, PyMftError>,
+        attribute_result: Result<MftAttribute, mft::err::Error>,
         py: Python,
     ) -> PyObject {
         match attribute_result {
@@ -76,7 +76,7 @@ impl PyMftAttributesIter {
                     Err(e) => e.into_object(py),
                 }
             }
-            Err(e) => PyErr::from(e).into_object(py),
+            Err(e) => PyErr::from(PyMftError(e)).into_object(py),
         }
     }
 

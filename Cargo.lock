@@ -360,6 +360,7 @@ version = "0.1.0"
 dependencies = [
  "csv 1.0.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "mft 0.1.2-alpha.0",
+ "num-traits 0.2.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "pyo3 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "pyo3-file 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde 1.0.91 (registry+https://github.com/rust-lang/crates.io-index)",
