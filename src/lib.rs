@@ -2,26 +2,24 @@
 #![feature(custom_attribute)]
 
 mod entry;
-pub(crate) mod err;
 mod utils;
 
+pub(crate) mod err;
 pub use entry::PyMftEntry;
 
 use mft::{MftEntry, MftParser};
 
-use pyo3::exceptions::{NotImplementedError, RuntimeError};
+use std::fs::File;
+use std::io;
+use std::io::{BufReader, Read, Seek, SeekFrom};
+
 use pyo3::prelude::*;
 
-
-
+use pyo3::exceptions::{NotImplementedError, RuntimeError};
 use pyo3::PyIterProtocol;
-
 
 use crate::err::PyMftError;
 use crate::utils::FileOrFileLike;
-use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom};
-use std::{io};
 
 pub trait ReadSeek: Read + Seek {
     fn tell(&mut self) -> io::Result<u64> {
@@ -88,7 +86,7 @@ impl PyMftParser {
     /// --
     ///
     /// Returns an iterator that yields CSV records.
-    fn records_csv(&mut self) -> PyResult<PyMftEntriesIterator> {
+    fn entries_csv(&mut self) -> PyResult<PyMftEntriesIterator> {
         self.records_iterator(OutputFormat::CSV)
     }
 }
@@ -154,6 +152,8 @@ impl PyMftEntriesIterator {
             .inner
             .get_entry(self.current_record)
             .map_err(PyMftError);
+
+        self.current_record += 1;
 
         Ok(Some(self.entry_to_pyobject(entry_result, py)))
     }

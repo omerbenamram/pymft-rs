@@ -1,5 +1,5 @@
-use pyo3::PyErr;
 use pyo3::exceptions::RuntimeError;
+use pyo3::PyErr;
 
 pub struct PyMftError(pub mft::err::Error);
 
