@@ -212,7 +212,7 @@ impl PyIterProtocol for PyMftParser {
         slf.entries()
     }
     fn __next__(_slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
-        Err(PyErr::new::<NotImplementedError, _>("Using `next()` over `PyMftParser` is not supported. Try iterating over `PyMftParser(...).records()`"))
+        Err(PyErr::new::<NotImplementedError, _>("Using `next()` over `PyMftParser` is not supported. Try iterating over `PyMftParser(...).entries()`"))
     }
 }
 
