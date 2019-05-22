@@ -2,7 +2,7 @@ import pytest
 
 from pathlib import Path
 
-from mft import PyMftParser
+from mft import PyMftParser, PyMftEntry
 
 @pytest.fixture
 def sample_mft() -> str:
@@ -16,5 +16,16 @@ def test_it_works(sample_mft):
     with open(sample_mft, "rb") as m:
         parser = PyMftParser(m)
 
-        for record in parser.entries():
-            print(record)
+        sample_record: PyMftEntry = next(parser.entries())
+
+        assert sample_record.full_path == "$MFT"
+
+
+def test_iter_attributes(sample_mft):
+    with open(sample_mft, "rb") as m:
+        parser = PyMftParser(m)
+
+        sample_record: PyMftEntry = next(parser.entries())
+
+        print(list(sample_record.attributes()))
+        assert False

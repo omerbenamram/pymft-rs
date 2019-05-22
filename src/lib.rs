@@ -1,6 +1,7 @@
 #![allow(clippy::new_ret_no_self)]
 #![feature(custom_attribute)]
 
+mod attribute;
 mod entry;
 mod utils;
 
@@ -11,15 +12,23 @@ use mft::{MftEntry, MftParser};
 
 use std::fs::File;
 use std::io;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+
+use serde_json;
 
 use pyo3::prelude::*;
 
 use pyo3::exceptions::{NotImplementedError, RuntimeError};
 use pyo3::PyIterProtocol;
 
+use crate::attribute::{
+    PyMftAttribute, PyMftAttributeOther, PyMftAttributeX10, PyMftAttributeX30, PyMftAttributeX40,
+    PyMftAttributeX80, PyMftAttributeX90,
+};
 use crate::err::PyMftError;
 use crate::utils::FileOrFileLike;
+use csv::Writer;
+use pyo3::types::PyString;
 
 pub trait ReadSeek: Read + Seek {
     fn tell(&mut self) -> io::Result<u64> {
@@ -29,10 +38,10 @@ pub trait ReadSeek: Read + Seek {
 
 impl<T: Read + Seek> ReadSeek for T {}
 
-#[derive(Copy, Clone, PartialOrd, PartialEq)]
-pub enum OutputFormat {
-    CSV,
-    XML,
+pub enum Output<W: Write> {
+    Python,
+    CSV(Writer<W>),
+    JSON,
 }
 
 #[pyclass]
@@ -74,25 +83,38 @@ impl PyMftParser {
         Ok(())
     }
 
-    /// records(self, /)
+    /// entries(self, /)
     /// --
     ///
-    /// Returns an iterator that yields XML records.
+    /// Returns an iterator that yields the mft entries as python objects.
     fn entries(&mut self) -> PyResult<PyMftEntriesIterator> {
-        self.records_iterator(OutputFormat::CSV)
+        self.records_iterator(Output::Python)
     }
 
-    /// records_csv(self, /)
+    /// entries_json(self, /)
     /// --
     ///
-    /// Returns an iterator that yields CSV records.
+    /// Returns an iterator that yields mft entries as JSON.
+    fn entries_(&mut self) -> PyResult<PyMftEntriesIterator> {
+        self.records_iterator(Output::JSON)
+    }
+
+    /// entries_csv(self, /)
+    /// --
+    ///
+    /// Returns an iterator that yields mft entries CSV lines.
     fn entries_csv(&mut self) -> PyResult<PyMftEntriesIterator> {
-        self.records_iterator(OutputFormat::CSV)
+        let inner_buffer = Vec::new();
+        let writer = csv::Writer::from_writer(inner_buffer);
+        self.records_iterator(Output::CSV(Box::new(writer)))
     }
 }
 
 impl PyMftParser {
-    fn records_iterator(&mut self, output_format: OutputFormat) -> PyResult<PyMftEntriesIterator> {
+    fn records_iterator(
+        &mut self,
+        output_format: Output<impl Write>,
+    ) -> PyResult<PyMftEntriesIterator> {
         let inner = match self.inner.take() {
             Some(inner) => inner,
             None => {
@@ -118,7 +140,7 @@ pub struct PyMftEntriesIterator {
     inner: MftParser<Box<dyn ReadSeek>>,
     total_number_of_records: u64,
     current_record: u64,
-    output_format: OutputFormat,
+    output_format: Output<Box<dyn Write>>,
 }
 
 impl PyMftEntriesIterator {
@@ -136,6 +158,30 @@ impl PyMftEntriesIterator {
                     Err(e) => e.into_object(py),
                 }
             }
+            Err(e) => PyErr::from(e).into_object(py),
+        }
+    }
+
+    fn entry_to_json(
+        &mut self,
+        entry_result: Result<MftEntry, PyMftError>,
+        py: Python,
+    ) -> PyObject {
+        match entry_result {
+            Ok(entry) => match serde_json::to_string(entry) {
+                Ok(s) => PyString::new(py, &s).into_object(py),
+                Err(e) => PyErr::from(e).into_object(py),
+            },
+            Err(e) => PyErr::from(e).into_object(py),
+        }
+    }
+
+    fn entry_to_csv(&mut self, entry_result: Result<MftEntry, PyMftError>, py: Python) -> PyObject {
+        match entry_result {
+            Ok(entry) => match csv::to_string(entry) {
+                Ok(s) => PyString::new(py, &s).into_object(py),
+                Err(e) => PyErr::from(e).into_object(py),
+            },
             Err(e) => PyErr::from(e).into_object(py),
         }
     }
@@ -184,8 +230,19 @@ impl PyIterProtocol for PyMftEntriesIterator {
 #[pymodule]
 fn mft(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyMftParser>()?;
+
+    // Entry
     m.add_class::<PyMftEntriesIterator>()?;
     m.add_class::<PyMftEntry>()?;
+
+    // Attributes
+    m.add_class::<PyMftAttribute>()?;
+    m.add_class::<PyMftAttributeX10>()?;
+    m.add_class::<PyMftAttributeX30>()?;
+    m.add_class::<PyMftAttributeX40>()?;
+    m.add_class::<PyMftAttributeX80>()?;
+    m.add_class::<PyMftAttributeX90>()?;
+    m.add_class::<PyMftAttributeOther>()?;
 
     Ok(())
 }
