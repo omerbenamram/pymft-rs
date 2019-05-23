@@ -4,6 +4,7 @@ from pathlib import Path
 
 from mft import PyMftParser, PyMftEntry
 
+
 @pytest.fixture
 def sample_mft() -> str:
     p = Path(__file__).parent.parent / "samples" / "MFT"
