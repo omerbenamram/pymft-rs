@@ -1,17 +1,19 @@
 use mft::attribute::header::ResidentialHeader;
-use mft::attribute::{MftAttributeContent};
-
 use mft::attribute::raw::RawAttribute;
 use mft::attribute::x40::ObjectIdAttr;
 use mft::attribute::x80::DataAttr;
 use mft::attribute::x90::IndexRootAttr;
+use mft::attribute::MftAttributeContent;
 use mft::{FileNameAttr, MftAttribute, StandardInfoAttr};
 
 use num_traits::cast::ToPrimitive;
 
+use mft::attribute::x20::AttributeListAttr;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDateTime};
+use pyo3::types::{PyBytes, PyDateTime, PyTzInfo};
 use pyo3::{ffi, Py, PyResult, Python};
+
+use crate::utils::{date_to_pyobject, get_utc};
 
 #[pyclass]
 pub struct PyMftAttribute {
@@ -60,6 +62,7 @@ impl PyMftAttribute {
 impl PyMftAttribute {
     /// Will be one of
     /// - `PyMftAttributeX10`
+    /// - `PyMftAttributeX20`
     /// - `PyMftAttributeX30`
     /// - `PyMftAttributeX40`
     /// - `PyMftAttributeX80`
@@ -73,6 +76,9 @@ impl PyMftAttribute {
         Ok(match &self.inner.data {
             MftAttributeContent::AttrX10(info) => {
                 PyMftAttributeX10::from_x10(py, info.clone())?.into_object(py)
+            }
+            MftAttributeContent::AttrX20(info) => {
+                PyMftAttributeX20::from_x20(py, info.clone())?.into_object(py)
             }
             MftAttributeContent::AttrX30(info) => {
                 PyMftAttributeX30::from_x30(py, info.clone())?.into_object(py)
@@ -135,37 +141,62 @@ impl PyMftAttributeX10 {
 impl PyMftAttributeX10 {
     #[getter]
     pub fn created(&self) -> PyResult<Py<PyDateTime>> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        PyDateTime::from_timestamp(py, self.inner.created.timestamp() as f64, None)
+        date_to_pyobject(&self.inner.created)
     }
     #[getter]
     pub fn modified(&self) -> PyResult<Py<PyDateTime>> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        PyDateTime::from_timestamp(py, self.inner.modified.timestamp() as f64, None)
+        date_to_pyobject(&self.inner.modified)
     }
     #[getter]
     pub fn mft_modified(&self) -> PyResult<Py<PyDateTime>> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        PyDateTime::from_timestamp(py, self.inner.mft_modified.timestamp() as f64, None)
+        date_to_pyobject(&self.inner.mft_modified)
     }
 
     #[getter]
     pub fn accessed(&self) -> PyResult<Py<PyDateTime>> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        PyDateTime::from_timestamp(py, self.inner.accessed.timestamp() as f64, None)
+        date_to_pyobject(&self.inner.accessed)
     }
 
     #[getter]
     pub fn file_flags(&self) -> PyResult<String> {
         Ok(format!("{:?}", self.inner.file_flags))
+    }
+}
+
+#[pyclass]
+pub struct PyMftAttributeX20 {
+    inner: AttributeListAttr,
+    #[pyo3(get)]
+    pub attribute_type: u32,
+    #[pyo3(get)]
+    pub record_length: u16,
+    #[pyo3(get)]
+    pub first_vcn: u64,
+    #[pyo3(get)]
+    pub parent_entry_id: u64,
+    #[pyo3(get)]
+    pub parent_entry_sequence: u16,
+    #[pyo3(get)]
+    pub attribute_id: u16,
+    #[pyo3(get)]
+    pub name: String,
+}
+
+impl PyMftAttributeX20 {
+    pub fn from_x20(py: Python, attr: AttributeListAttr) -> PyResult<Py<Self>> {
+        Py::new(
+            py,
+            PyMftAttributeX20 {
+                parent_entry_id: attr.base_reference.entry,
+                parent_entry_sequence: attr.base_reference.sequence,
+                attribute_id: attr.attribute_id,
+                name: attr.name.clone(),
+                attribute_type: attr.attribute_type,
+                record_length: attr.record_length,
+                first_vcn: attr.first_vcn,
+                inner: attr,
+            },
+        )
     }
 }
 
@@ -210,32 +241,20 @@ impl PyMftAttributeX30 {
 impl PyMftAttributeX30 {
     #[getter]
     pub fn created(&self) -> PyResult<Py<PyDateTime>> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        PyDateTime::from_timestamp(py, self.inner.created.timestamp() as f64, None)
+        date_to_pyobject(&self.inner.created)
     }
     #[getter]
     pub fn modified(&self) -> PyResult<Py<PyDateTime>> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        PyDateTime::from_timestamp(py, self.inner.modified.timestamp() as f64, None)
+        date_to_pyobject(&self.inner.modified)
     }
     #[getter]
     pub fn mft_modified(&self) -> PyResult<Py<PyDateTime>> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        PyDateTime::from_timestamp(py, self.inner.mft_modified.timestamp() as f64, None)
+        date_to_pyobject(&self.inner.mft_modified)
     }
 
     #[getter]
     pub fn accessed(&self) -> PyResult<Py<PyDateTime>> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        PyDateTime::from_timestamp(py, self.inner.accessed.timestamp() as f64, None)
+        date_to_pyobject(&self.inner.accessed)
     }
 
     #[getter]

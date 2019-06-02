@@ -1,4 +1,4 @@
-use crate::{ReadSeek};
+use crate::ReadSeek;
 use pyo3::prelude::*;
 
 use crate::attribute::PyMftAttribute;

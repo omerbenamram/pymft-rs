@@ -1,3 +1,5 @@
+import datetime
+
 import pytest
 
 from pathlib import Path
@@ -30,3 +32,16 @@ def test_iter_attributes(sample_mft):
 
         l = list(sample_record.attributes())
         assert len(l) == 4
+
+
+def test_datetimes_are_converted_properly(sample_mft):
+    with open(sample_mft, "rb") as m:
+        parser = PyMftParser(m)
+
+        sample_record: PyMftEntry = next(parser.entries())
+
+        attribute = next(sample_record.attributes())
+
+        content = attribute.attribute_content()
+
+        assert content.created.tzinfo == datetime.timezone.utc

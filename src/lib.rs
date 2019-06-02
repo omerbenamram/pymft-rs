@@ -15,6 +15,7 @@ use std::io;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 
 use serde_json;
+use log::warn;
 
 use pyo3::prelude::*;
 
@@ -22,13 +23,13 @@ use pyo3::exceptions::{NotImplementedError, RuntimeError};
 use pyo3::PyIterProtocol;
 
 use crate::attribute::{
-    PyMftAttribute, PyMftAttributeOther, PyMftAttributeX10, PyMftAttributeX30, PyMftAttributeX40,
-    PyMftAttributeX80, PyMftAttributeX90,
+    PyMftAttribute, PyMftAttributeOther, PyMftAttributeX10, PyMftAttributeX20, PyMftAttributeX30,
+    PyMftAttributeX40, PyMftAttributeX80, PyMftAttributeX90,
 };
 use crate::entry::PyMftAttributesIter;
 use crate::err::PyMftError;
-use crate::utils::FileOrFileLike;
-use csv::Writer;
+use crate::utils::{FileOrFileLike, init_logging};
+use csv::{Writer, WriterBuilder};
 use mft::csv::FlatMftEntryWithName;
 use pyo3::types::{PyBytes, PyString};
 
@@ -85,6 +86,19 @@ impl PyMftParser {
         Ok(())
     }
 
+    /// number_of_entries(self, /)
+    /// --
+    ///
+    /// Returns the total number of entries in the MFT.
+    fn number_of_entries(&self) -> PyResult<u64> {
+        match self.inner {
+            Some(ref inner) => Ok(inner.get_entry_count()),
+            None => Err(PyErr::new::<RuntimeError, _>(
+                "Cannot call this method before object is initialized",
+            )),
+        }
+    }
+
     /// entries(self, /)
     /// --
     ///
@@ -128,6 +142,7 @@ impl PyMftParser {
             total_number_of_records: n_records,
             current_record: 0,
             output_format,
+            csv_header_written: false,
         })
     }
 }
@@ -138,6 +153,7 @@ pub struct PyMftEntriesIterator {
     total_number_of_records: u64,
     current_record: u64,
     output_format: Output,
+    csv_header_written: bool,
 }
 
 impl PyMftEntriesIterator {
@@ -176,17 +192,28 @@ impl PyMftEntriesIterator {
     }
 
     fn entry_to_csv(&mut self, entry_result: Result<MftEntry, PyMftError>, py: Python) -> PyObject {
-        let mut writer = Writer::from_writer(Vec::new());
+        let mut writer = WriterBuilder::new()
+            .has_headers(!self.csv_header_written)
+            .from_writer(Vec::new());
+
+        if !self.csv_header_written {
+            self.csv_header_written = true
+        }
 
         match entry_result {
             Ok(entry) => {
                 match writer.serialize(FlatMftEntryWithName::from_entry(&entry, &mut self.inner)) {
                     Ok(()) => {}
                     Err(_e) => {
-                        return PyErr::new::<RuntimeError, _>("CSV Serialization failed").into_object(py)
+                        return PyErr::new::<RuntimeError, _>("CSV Serialization failed")
+                            .into_object(py)
                     }
                 }
-                PyBytes::new(py, &writer.into_inner().expect("IntoInner")).into_object(py)
+
+                match writer.into_inner() {
+                    Ok(bytes) => PyBytes::new(py, &bytes).into_object(py),
+                    Err(e) => PyErr::new::<RuntimeError, _>(e.to_string()).into_object(py),
+                }
             }
             Err(e) => PyErr::from(e).into_object(py),
         }
@@ -240,7 +267,9 @@ impl PyIterProtocol for PyMftEntriesIterator {
 // Don't use double quotes ("") inside this docstring, this will crash pyo3.
 /// Parses an mft file.
 #[pymodule]
-fn mft(_py: Python, m: &PyModule) -> PyResult<()> {
+fn mft(py: Python, m: &PyModule) -> PyResult<()> {
+    init_logging(py).ok();
+
     m.add_class::<PyMftParser>()?;
 
     // Entry
@@ -251,6 +280,7 @@ fn mft(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyMftAttribute>()?;
     m.add_class::<PyMftAttributesIter>()?;
     m.add_class::<PyMftAttributeX10>()?;
+    m.add_class::<PyMftAttributeX20>()?;
     m.add_class::<PyMftAttributeX30>()?;
     m.add_class::<PyMftAttributeX40>()?;
     m.add_class::<PyMftAttributeX80>()?;

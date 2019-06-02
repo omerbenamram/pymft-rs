@@ -9,9 +9,11 @@ crate-type = ["cdylib"]
 
 
 [dependencies]
-mft = "0.2.0"
+mft = {path = "../mft"}
 pyo3 = {version = "0.6.0", features = ["extension-module"]}
 num-traits = "0.2"
+log = "0.4.6"
+chrono = "0.4.6"
 pyo3-file = "0.2.0"
 serde = "1.0.91"
 serde_json = "1.0.39"
