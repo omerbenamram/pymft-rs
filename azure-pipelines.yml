@@ -132,7 +132,7 @@ jobs:
       displayName: 'Install pyo3-pack'
 
     - script: |
-        pyo3-pack build -o $(Build.BinariesDirectory)
+        pyo3-pack build -o $(Build.BinariesDirectory) --interpreter python
       displayName: 'PyO3-pack build'
 
     - powershell: |
@@ -145,6 +145,6 @@ jobs:
       displayName: 'pytest'
     
     - script: |
-        pyo3-pack publish -u omerba -p $(pypi.password)
+        pyo3-pack publish -u omerba -p $(pypi.password) --interpreter python
       displayName: "Upload to PyPi"
       condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/'))

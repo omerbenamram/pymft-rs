@@ -42,6 +42,6 @@ def test_datetimes_are_converted_properly(sample_mft):
 
         attribute = next(sample_record.attributes())
 
-        content = attribute.attribute_content()
+        content = attribute.attribute_content
 
         assert content.created.tzinfo == datetime.timezone.utc

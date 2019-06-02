@@ -69,6 +69,7 @@ impl PyMftAttribute {
     /// - `PyMftAttributeX90`
     /// - `PyMftAttributeOther` (Currently unparsed in rust)
     /// - `None` (if attribute content is non-resident)
+    #[getter]
     pub fn attribute_content(&self) -> PyResult<PyObject> {
         let gil = Python::acquire_gil();
         let py = gil.python();
