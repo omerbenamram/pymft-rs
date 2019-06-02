@@ -1,8 +1,9 @@
 use log::{Level, Log, Metadata, Record, SetLoggerError};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Timelike, Utc};
+use log::warn;
 use pyo3::types::{PyDateTime, PyString, PyTzInfo};
-use pyo3::{ToPyObject, Py};
+use pyo3::{Py, ToPyObject};
 use pyo3::{PyObject, PyResult, Python};
 use pyo3_file::PyFileLikeObject;
 
@@ -88,14 +89,23 @@ pub fn date_to_pyobject(date: &DateTime<Utc>) -> PyResult<Py<PyDateTime>> {
     let gil = Python::acquire_gil();
     let py = gil.python();
 
-    PyDateTime::from_timestamp(
+    let utc = get_utc().ok();
+
+    if utc.is_none() {
+        warn!("UTC module not found, falling back to naive timezone objects")
+    }
+
+    PyDateTime::new(
         py,
-        date.timestamp() as f64,
+        date.year(),
+        date.month() as u8,
+        date.day() as u8,
+        date.hour() as u8,
+        date.minute() as u8,
+        date.second() as u8,
+        date.timestamp_subsec_micros(),
         // Fallback to naive timestamps (None) if for some reason `datetime.timezone.utc` is not present.
-        get_utc()
-            .ok()
-            .as_ref()
-            .and_then(|u| Some(u.cast_as::<PyTzInfo>(py).expect("utc to be a PyTzInfo"))),
+        utc.as_ref(),
     )
 }
 
