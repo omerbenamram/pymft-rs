@@ -10,10 +10,10 @@ use num_traits::cast::ToPrimitive;
 
 use mft::attribute::x20::AttributeListAttr;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDateTime, PyTzInfo};
+use pyo3::types::{PyBytes, PyDateTime};
 use pyo3::{ffi, Py, PyResult, Python};
 
-use crate::utils::{date_to_pyobject, get_utc};
+use crate::utils::date_to_pyobject;
 
 #[pyclass]
 pub struct PyMftAttribute {

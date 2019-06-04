@@ -12,10 +12,9 @@ use mft::{MftEntry, MftParser};
 
 use std::fs::File;
 use std::io;
-use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 
 use serde_json;
-use log::warn;
 
 use pyo3::prelude::*;
 
@@ -28,8 +27,8 @@ use crate::attribute::{
 };
 use crate::entry::PyMftAttributesIter;
 use crate::err::PyMftError;
-use crate::utils::{FileOrFileLike, init_logging};
-use csv::{Writer, WriterBuilder};
+use crate::utils::{init_logging, FileOrFileLike};
+use csv::WriterBuilder;
 use mft::csv::FlatMftEntryWithName;
 use pyo3::types::{PyBytes, PyString};
 
