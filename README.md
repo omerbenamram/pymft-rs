@@ -1,6 +1,6 @@
 [![Build Status](https://dev.azure.com/benamram/dfir/_apis/build/status/omerbenamram.pymft-rs?branchName=master)](https://dev.azure.com/benamram/evtx/_build/latest?definitionId=2&branchName=master)
 
-# pyevtx-rs
+# pymft-rs
 
 Python bindings for `https://github.com/omerbenamram/mft/`.
 
