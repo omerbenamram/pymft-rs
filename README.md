@@ -40,7 +40,7 @@ def main():
                 if isinstance(resident_content, PyMftAttributeX30):
                     print(f'Found an X30 attribute')
                     print(f'Modified: {resident_content.modified}')
-                    print(f'Modified: {resident_content.name}')
+                    print(f'Name: {resident_content.name}')
             
         print('--------------------------------')
 ```
@@ -53,14 +53,14 @@ Found an X10 attribute
 Modified: 2007-06-30 12:50:52.252395+00:00
 Found an X30 attribute
 Modified: 2007-06-30 12:50:52.252395+00:00
-Modified: $MFT
+Name: $MFT
 --------------------------------
 Entry ID: 1
 Found an X10 attribute
 Modified: 2007-06-30 12:50:52.252395+00:00
 Found an X30 attribute
 Modified: 2007-06-30 12:50:52.252395+00:00
-Modified: $MFTMirr
+Name: $MFTMirr
 --------------------------------
 .....
 ```
