@@ -1,5 +1,4 @@
 #![allow(clippy::new_ret_no_self)]
-#![feature(custom_attribute)]
 
 mod attribute;
 mod entry;
@@ -31,6 +30,7 @@ use crate::utils::{init_logging, FileOrFileLike};
 use csv::WriterBuilder;
 use mft::csv::FlatMftEntryWithName;
 use pyo3::types::{PyBytes, PyString};
+use std::collections::HashMap;
 
 pub trait ReadSeek: Read + Seek {
     fn tell(&mut self) -> io::Result<u64> {
@@ -164,13 +164,17 @@ impl PyMftEntriesIterator {
         match entry_result {
             Ok(entry) => {
                 match PyMftEntry::from_mft_entry(py, entry, &mut self.inner)
-                    .map(|entry| entry.into_object(py))
+                    .map(|entry| entry.to_object(py))
                 {
                     Ok(py_mft_entry) => py_mft_entry,
-                    Err(e) => e.into_object(py),
+                    Err(e) => e.to_object(py),
                 }
             }
-            Err(e) => PyErr::from(e).into_object(py),
+            Err(e) => {
+                let err = PyErr::from(e);
+                err.restore(py);
+                Vec::<i32>::new().to_object(py)
+            }
         }
     }
 
@@ -181,12 +185,10 @@ impl PyMftEntriesIterator {
     ) -> PyObject {
         match entry_result {
             Ok(entry) => match serde_json::to_string(&entry) {
-                Ok(s) => PyString::new(py, &s).into_object(py),
-                Err(_e) => {
-                    PyErr::new::<RuntimeError, _>("JSON Serialization failed").into_object(py)
-                }
+                Ok(s) => PyString::new(py, &s).to_object(py),
+                Err(_e) => PyErr::new::<RuntimeError, _>("JSON Serialization failed").to_object(py),
             },
-            Err(e) => PyErr::from(e).into_object(py),
+            Err(e) => PyErr::from(e).to_object(py),
         }
     }
 
@@ -205,16 +207,16 @@ impl PyMftEntriesIterator {
                     Ok(()) => {}
                     Err(_e) => {
                         return PyErr::new::<RuntimeError, _>("CSV Serialization failed")
-                            .into_object(py)
+                            .to_object(py)
                     }
                 }
 
                 match writer.into_inner() {
-                    Ok(bytes) => PyBytes::new(py, &bytes).into_object(py),
-                    Err(e) => PyErr::new::<RuntimeError, _>(e.to_string()).into_object(py),
+                    Ok(bytes) => PyBytes::new(py, &bytes).to_object(py),
+                    Err(e) => PyErr::new::<RuntimeError, _>(e.to_string()).to_object(py),
                 }
             }
-            Err(e) => PyErr::from(e).into_object(py),
+            Err(e) => PyErr::from(e).to_object(py),
         }
     }
 

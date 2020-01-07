@@ -1,6 +1,6 @@
 [package]
 name = "mft"
-version = "0.4.1"
+version = "0.5.0"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
 edition = "2018"
 
@@ -8,12 +8,12 @@ edition = "2018"
 crate-type = ["cdylib"]
 
 [dependencies]
-mft = "0.4.1"
-pyo3 = {version = "0.6.0", features = ["extension-module"]}
+mft = {version = "0.5.0", no-default-features = true}
+pyo3 = {version = "0.8", features = ["extension-module"]}
 num-traits = "0.2"
-log = "0.4.6"
-chrono = "0.4.6"
-pyo3-file = "0.2.0"
-serde = "1.0.91"
-serde_json = "1.0.39"
-csv = "1.0.7"
+log = "0.4"
+chrono = "0.4"
+pyo3-file = "0.3.0"
+serde = "1.0"
+serde_json = "1.0"
+csv = "1.1"

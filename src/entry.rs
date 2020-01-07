@@ -108,13 +108,13 @@ impl PyMftAttributesIter {
         match attribute_result {
             Ok(attribute) => {
                 match PyMftAttribute::from_mft_attribute(py, attribute)
-                    .map(|entry| entry.into_object(py))
+                    .map(|entry| entry.to_object(py))
                 {
                     Ok(py_mft_entry) => py_mft_entry,
-                    Err(e) => e.into_object(py),
+                    Err(e) => e.to_object(py),
                 }
             }
-            Err(e) => PyErr::from(PyMftError(e)).into_object(py),
+            Err(e) => PyErr::from(PyMftError(e)).to_object(py),
         }
     }
 

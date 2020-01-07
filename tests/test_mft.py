@@ -45,3 +45,17 @@ def test_datetimes_are_converted_properly(sample_mft):
         content = attribute.attribute_content
 
         assert content.created.tzinfo == datetime.timezone.utc
+
+
+def test_scoping(sample_mft):
+    def resident_attribute():
+        parser = PyMftParser(str(sample_mft))
+        for entry in parser.entries():
+            for attribute in entry.attributes():
+                assert not isinstance(attribute, RuntimeError), (attribute, entry.entry_id, list(entry.attributes()))
+                if attribute.type_code == 0x80 and attribute.attribute_content is not None:
+                    if len(attribute.attribute_content.data) > 0:
+                        return entry, attribute
+
+    e, a = resident_attribute()
+    assert a.attribute_content is not None
