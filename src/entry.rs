@@ -3,7 +3,6 @@ use pyo3::prelude::*;
 
 use crate::attribute::PyMftAttribute;
 use crate::err::PyMftError;
-use mft::err::Error;
 use mft::{MftAttribute, MftEntry, MftParser};
 use pyo3::{Py, PyClassShell, PyIterProtocol, PyResult, Python};
 use std::path::PathBuf;
@@ -74,14 +73,14 @@ impl PyMftEntry {
         Py::new(
             py,
             PyMftEntry {
-                entry_id: entry.header.record_number.clone(),
-                sequence: entry.header.sequence.clone(),
-                base_entry_id: entry.header.base_reference.entry.clone(),
+                entry_id: entry.header.record_number,
+                sequence: entry.header.sequence,
+                base_entry_id: entry.header.base_reference.entry,
                 base_entry_sequence: 0,
                 hard_link_count: 0,
                 flags: format!("{:?}", entry.header.flags),
-                used_entry_size: entry.header.used_entry_size.clone(),
-                total_entry_size: entry.header.total_entry_size.clone(),
+                used_entry_size: entry.header.used_entry_size,
+                total_entry_size: entry.header.total_entry_size,
                 inner: entry,
                 full_path,
             },

@@ -1,4 +1,5 @@
-#![allow(clippy::new_ret_no_self)]
+#![deny(unused_must_use)]
+#![cfg_attr(not(debug_assertions), deny(clippy::dbg_macro))]
 
 mod attribute;
 mod entry;
@@ -174,7 +175,7 @@ impl PyMftEntriesIterator {
             }
             Err(e) => {
                 let err = PyErr::from(e);
-                return err.to_object(py);
+                err.to_object(py)
             }
         }
     }
@@ -236,8 +237,6 @@ impl PyMftEntriesIterator {
                         self.current_record += 1;
                         continue;
                     }
-
-                    dbg!(&entry.header.record_number);
 
                     let ret = match self.output_format {
                         Output::Python => self.entry_to_pyobject(Ok(entry), py),

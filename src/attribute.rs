@@ -51,7 +51,7 @@ impl PyMftAttribute {
                         false
                     }
                 },
-                data_size: attr.header.record_length.clone(),
+                data_size: attr.header.record_length,
                 inner: attr,
             },
         )
@@ -289,17 +289,17 @@ impl PyMftAttributeX40 {
                 birth_volume_id: attr
                     .birth_volume_id
                     .as_ref()
-                    .and_then(|a| Some(a.to_string()))
+                    .map(|a| a.to_string())
                     .unwrap_or_default(),
                 birth_object_id: attr
                     .birth_object_id
                     .as_ref()
-                    .and_then(|a| Some(a.to_string()))
+                    .map(|a| a.to_string())
                     .unwrap_or_default(),
                 domain_id: attr
                     .domain_id
                     .as_ref()
-                    .and_then(|a| Some(a.to_string()))
+                    .map(|a| a.to_string())
                     .unwrap_or_default(),
             },
         )
