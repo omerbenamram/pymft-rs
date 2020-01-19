@@ -13,6 +13,6 @@ pyo3 = {version = "0.9.0-alpha.1", features = ["extension-module"]}
 num-traits = "0.2"
 log = "0.4"
 chrono = "0.4"
-pyo3-file = {path = "../pyo3-file"}
+pyo3-file = {version = "0.3.1-alpha.1"}
 serde_json = "1.0"
 csv = "1.1"
