@@ -95,7 +95,7 @@ pub fn date_to_pyobject(date: &DateTime<Utc>) -> PyResult<PyObject> {
         warn!("UTC module not found, falling back to naive timezone objects")
     }
 
-    match PyDateTime::new(
+    PyDateTime::new(
         py,
         date.year(),
         date.month() as u8,
@@ -106,10 +106,8 @@ pub fn date_to_pyobject(date: &DateTime<Utc>) -> PyResult<PyObject> {
         date.timestamp_subsec_micros(),
         // Fallback to naive timestamps (None) if for some reason `datetime.timezone.utc` is not present.
         utc.as_ref(),
-    ) {
-        Ok(dt) => Ok(dt.to_object(py)),
-        Err(e) => Err(e),
-    }
+    )
+    .map(|dt| dt.to_object(py))
 }
 
 pub fn get_utc() -> PyResult<PyObject> {
