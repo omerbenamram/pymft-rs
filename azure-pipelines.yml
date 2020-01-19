@@ -18,21 +18,24 @@ jobs:
   
     - script: |
         python -m pip install --upgrade pip setuptools wheel
-      displayName: 'Install pyo3-pack'
+      displayName: 'Install setuptools+wheel'
 
     - script: docker run -v $(Build.SourcesDirectory):/io konstin2/pyo3-pack build
     
+    - script: docker run -v $(Build.SourcesDirectory):/io konstin2/pyo3-pack:master build
+      displayName: 'Install maturin'
+      
     - script: |
         pip install $(Build.SourcesDirectory)/target/wheels/mft-*-cp36-*.whl
       displayName: 'Install new wheel'
-
+      
     - script: |
         pip install pytest pytest-azurepipelines
         pytest
       displayName: 'pytest'
     
     - script: |
-              docker run -v $(Build.SourcesDirectory):/io konstin2/pyo3-pack publish -u omerba -p $(pypi.password)
+        docker run -v $(Build.SourcesDirectory):/io konstin2/pyo3-pack:master publish -u omerba -p $(pypi.password)
       displayName: "Upload to PyPi"
       condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/'))
 
@@ -62,9 +65,9 @@ jobs:
       displayName: "Create date variable"
 
     - bash: |
-        cargo install pyo3-pack
+        cargo install maturin
       displayName: "Install PyO3-pack"
-
+      
     - task: UsePythonVersion@0
       inputs:
         versionSpec: '3.6'
@@ -75,9 +78,9 @@ jobs:
       displayName: 'Install pyo3-pack'
 
     - script: |
-        pyo3-pack build -o $(Build.BinariesDirectory)
+        maturin build -o $(Build.BinariesDirectory)
       displayName: 'PyO3-pack build'
-
+      
     - script: |
         pip install $(Build.BinariesDirectory)/mft-*-cp36-*.whl
       displayName: 'Install new wheel'
@@ -88,7 +91,7 @@ jobs:
       displayName: 'pytest'
     
     - script: |
-        pyo3-pack publish -u omerba -p $(pypi.password)
+        maturin publish -u omerba -p $(pypi.password)
       displayName: "Upload to PyPi"
       condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/'))
 
@@ -117,9 +120,9 @@ jobs:
         DATE="$(date +%Y-%m-%d)"
         echo "##vso[task.setvariable variable=build.date]$DATE"
       displayName: "Create date variable"
-
+    
     - script: |
-        cargo install pyo3-pack
+        cargo install maturin
       displayName: "Install PyO3-pack"
 
     - task: UsePythonVersion@0
@@ -132,9 +135,9 @@ jobs:
       displayName: 'Install pyo3-pack'
 
     - script: |
-        pyo3-pack build -o $(Build.BinariesDirectory) --interpreter python
+        maturin build -o $(Build.BinariesDirectory) --interpreter python
       displayName: 'PyO3-pack build'
-
+      
     - powershell: |
         pip install $(Build.BinariesDirectory)/$(Get-ChildItem $(Build.BinariesDirectory)/mft-*-cp36-*.whl | Select -exp Name)
       displayName: 'Install new wheel'
@@ -145,7 +148,7 @@ jobs:
       displayName: 'pytest'
     
     - script: |
-        pyo3-pack publish -u omerba -p $(pypi.password) --interpreter python
+        maturin publish -u omerba -p $(pypi.password) --interpreter python
       displayName: "Upload to PyPi"
       condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/'))
 
@@ -155,6 +158,6 @@ jobs:
         architecture: 'x64'
 
     - script: |
-        pyo3-pack publish -u omerba -p $(pypi.password) --interpreter python
+        maturin publish -u omerba -p $(pypi.password) --interpreter python
       displayName: "Upload to PyPi"
       condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/'))
