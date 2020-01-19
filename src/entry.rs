@@ -4,7 +4,7 @@ use pyo3::prelude::*;
 use crate::attribute::PyMftAttribute;
 use crate::err::PyMftError;
 use mft::{MftAttribute, MftEntry, MftParser};
-use pyo3::{Py, PyIterProtocol, PyResult, Python};
+use pyo3::{Py, PyClassShell, PyIterProtocol, PyResult, Python};
 use std::path::PathBuf;
 
 #[pyclass]
@@ -91,11 +91,11 @@ pub struct PyMftAttributesIter {
 
 #[pyproto]
 impl PyIterProtocol for PyMftAttributesIter {
-    fn __iter__(slf: PyRefMut<Self>) -> PyResult<Py<PyMftAttributesIter>> {
+    fn __iter__(slf: &mut PyClassShell<Self>) -> PyResult<Py<PyMftAttributesIter>> {
         Ok(slf.into())
     }
 
-    fn __next__(mut slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
+    fn __next__(slf: &mut PyClassShell<Self>) -> PyResult<Option<PyObject>> {
         slf.next()
     }
 }

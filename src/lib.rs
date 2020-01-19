@@ -18,7 +18,7 @@ use serde_json;
 use pyo3::prelude::*;
 
 use pyo3::exceptions::{NotImplementedError, RuntimeError};
-use pyo3::PyIterProtocol;
+use pyo3::{PyClassShell, PyIterProtocol};
 
 use crate::attribute::{
     PyMftAttribute, PyMftAttributeOther, PyMftAttributeX10, PyMftAttributeX20, PyMftAttributeX30,
@@ -59,7 +59,7 @@ pub struct PyMftParser {
 #[pymethods]
 impl PyMftParser {
     #[new]
-    fn new(obj: &PyRawObject, path_or_file_like: PyObject) -> PyResult<()> {
+    fn new(path_or_file_like: PyObject) -> PyResult<Self> {
         let file_or_file_like = FileOrFileLike::from_pyobject(path_or_file_like)?;
 
         let (boxed_read_seek, size) = match file_or_file_like {
@@ -76,13 +76,9 @@ impl PyMftParser {
 
         let parser = MftParser::from_read_seek(boxed_read_seek, size).map_err(PyMftError)?;
 
-        obj.init({
-            PyMftParser {
-                inner: Some(parser),
-            }
-        });
-
-        Ok(())
+        Ok(PyMftParser {
+            inner: Some(parser),
+        })
     }
 
     /// number_of_entries(self, /)
@@ -247,20 +243,20 @@ impl PyMftEntriesIterator {
 
 #[pyproto]
 impl PyIterProtocol for PyMftParser {
-    fn __iter__(mut slf: PyRefMut<Self>) -> PyResult<PyMftEntriesIterator> {
+    fn __iter__(slf: &mut PyClassShell<Self>) -> PyResult<PyMftEntriesIterator> {
         slf.entries()
     }
-    fn __next__(_slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
+    fn __next__(_slf: &mut PyClassShell<Self>) -> PyResult<Option<PyObject>> {
         Err(PyErr::new::<NotImplementedError, _>("Using `next()` over `PyMftParser` is not supported. Try iterating over `PyMftParser(...).entries()`"))
     }
 }
 
 #[pyproto]
 impl PyIterProtocol for PyMftEntriesIterator {
-    fn __iter__(slf: PyRefMut<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
+    fn __iter__(slf: &mut PyClassShell<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
         Ok(slf.into())
     }
-    fn __next__(mut slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
+    fn __next__(slf: &mut PyClassShell<Self>) -> PyResult<Option<PyObject>> {
         slf.next()
     }
 }
