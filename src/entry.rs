@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 
 use crate::attribute::PyMftAttribute;
 use crate::err::PyMftError;
+use mft::err::Error;
 use mft::{MftAttribute, MftEntry, MftParser};
 use pyo3::{Py, PyClassShell, PyIterProtocol, PyResult, Python};
 use std::path::PathBuf;
@@ -37,17 +38,21 @@ impl PyMftEntry {
         let gil = Python::acquire_gil();
         let py = gil.python();
 
-        let attributes: Vec<Result<MftAttribute, mft::err::Error>> =
-            self.inner.iter_attributes().collect();
+        let mut v = vec![];
+        for attribute_result in self.inner.iter_attributes() {
+            match attribute_result {
+                Ok(a) => match PyMftAttributesIter::attribute_to_pyobject(a) {
+                    Ok(aa) => v.push(aa),
+                    Err(e) => return Err(e),
+                },
+                Err(e) => return Err(PyErr::from(PyMftError(e))),
+            }
+        }
 
         Py::new(
             py,
             PyMftAttributesIter {
-                inner: Box::new(
-                    attributes
-                        .into_iter()
-                        .map(PyMftAttributesIter::attribute_to_pyobject),
-                ),
+                inner: Box::new(v.into_iter()),
             },
         )
     }
@@ -86,7 +91,7 @@ impl PyMftEntry {
 
 #[pyclass]
 pub struct PyMftAttributesIter {
-    inner: Box<dyn Iterator<Item = PyObject> + Send>,
+    inner: Box<dyn Iterator<Item = PyObject>>,
 }
 
 #[pyproto]
@@ -101,21 +106,11 @@ impl PyIterProtocol for PyMftAttributesIter {
 }
 
 impl PyMftAttributesIter {
-    fn attribute_to_pyobject(attribute_result: Result<MftAttribute, mft::err::Error>) -> PyObject {
+    fn attribute_to_pyobject(attribute: MftAttribute) -> PyResult<PyObject> {
         let gil = Python::acquire_gil();
         let py = gil.python();
 
-        match attribute_result {
-            Ok(attribute) => {
-                match PyMftAttribute::from_mft_attribute(py, attribute)
-                    .map(|entry| entry.to_object(py))
-                {
-                    Ok(py_mft_entry) => py_mft_entry,
-                    Err(e) => e.to_object(py),
-                }
-            }
-            Err(e) => PyErr::from(PyMftError(e)).to_object(py),
-        }
+        PyMftAttribute::from_mft_attribute(py, attribute).map(|entry| entry.to_object(py))
     }
 
     fn next(&mut self) -> PyResult<Option<PyObject>> {

@@ -21,6 +21,7 @@ def test_it_works(sample_mft):
 
         sample_record: PyMftEntry = next(parser.entries())
 
+        assert sample_record.entry_id == 0
         assert sample_record.full_path == "$MFT"
 
 
@@ -47,15 +48,14 @@ def test_datetimes_are_converted_properly(sample_mft):
         assert content.created.tzinfo == datetime.timezone.utc
 
 
-def test_scoping(sample_mft):
-    def resident_attribute():
-        parser = PyMftParser(str(sample_mft))
-        for entry in parser.entries():
+def test_doesnt_yield_zeroed_entries(sample_mft):
+    parser = PyMftParser(str(sample_mft))
+        
+    for entry in parser.entries():
+        try:
             for attribute in entry.attributes():
-                assert not isinstance(attribute, RuntimeError), (attribute, entry.entry_id, list(entry.attributes()))
-                if attribute.type_code == 0x80 and attribute.attribute_content is not None:
-                    if len(attribute.attribute_content.data) > 0:
-                        return entry, attribute
+                print(entry.entry_id)
+        except RuntimeError as e:
+            assert False, (e, entry.entry_id)
 
-    e, a = resident_attribute()
-    assert a.attribute_content is not None
+

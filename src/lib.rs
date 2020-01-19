@@ -29,6 +29,7 @@ use crate::err::PyMftError;
 use crate::utils::{init_logging, FileOrFileLike};
 use csv::WriterBuilder;
 use mft::csv::FlatMftEntryWithName;
+use mft::entry::ZERO_HEADER;
 use pyo3::types::{PyBytes, PyString};
 
 pub trait ReadSeek: Read + Seek {
@@ -173,8 +174,7 @@ impl PyMftEntriesIterator {
             }
             Err(e) => {
                 let err = PyErr::from(e);
-                err.restore(py);
-                Vec::<i32>::new().to_object(py)
+                return err.to_object(py);
             }
         }
     }
@@ -225,24 +225,34 @@ impl PyMftEntriesIterator {
         let gil = Python::acquire_gil();
         let py = gil.python();
 
-        if self.current_record == self.total_number_of_records {
-            return Ok(None);
+        loop {
+            if self.current_record == self.total_number_of_records {
+                return Ok(None);
+            }
+
+            let obj = match self.inner.get_entry(self.current_record) {
+                Ok(entry) => {
+                    if &entry.header.signature == ZERO_HEADER {
+                        self.current_record += 1;
+                        continue;
+                    }
+
+                    dbg!(&entry.header.record_number);
+
+                    let ret = match self.output_format {
+                        Output::Python => self.entry_to_pyobject(Ok(entry), py),
+                        Output::JSON => self.entry_to_json(Ok(entry), py),
+                        Output::CSV => self.entry_to_csv(Ok(entry), py),
+                    };
+
+                    Ok(Some(ret))
+                }
+                Err(error) => Ok(Some(PyErr::from(PyMftError(error)).to_object(py))),
+            };
+
+            self.current_record += 1;
+            return obj;
         }
-
-        let entry_result = self
-            .inner
-            .get_entry(self.current_record)
-            .map_err(PyMftError);
-
-        self.current_record += 1;
-
-        let entry_result = match self.output_format {
-            Output::Python => self.entry_to_pyobject(entry_result, py),
-            Output::JSON => self.entry_to_json(entry_result, py),
-            Output::CSV => self.entry_to_csv(entry_result, py),
-        };
-
-        Ok(Some(entry_result))
     }
 }
 
