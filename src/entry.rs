@@ -3,7 +3,7 @@ use pyo3::prelude::*;
 
 use crate::attribute::PyMftAttribute;
 use crate::err::PyMftError;
-use mft::{MftAttribute, MftEntry, MftParser};
+use mft::{MftEntry, MftParser};
 use pyo3::{Py, PyClassShell, PyIterProtocol, PyResult, Python};
 use std::path::PathBuf;
 
@@ -37,11 +37,14 @@ impl PyMftEntry {
         let gil = Python::acquire_gil();
         let py = gil.python();
 
-        let mut v = vec![];
+        let mut attributes = vec![];
+
         for attribute_result in self.inner.iter_attributes() {
             match attribute_result {
-                Ok(a) => match PyMftAttributesIter::attribute_to_pyobject(a) {
-                    Ok(aa) => v.push(aa),
+                Ok(attribute) => match PyMftAttribute::from_mft_attribute(py, attribute)
+                    .map(|entry| entry.to_object(py))
+                {
+                    Ok(obj) => attributes.push(obj),
                     Err(e) => return Err(e),
                 },
                 Err(e) => return Err(PyErr::from(PyMftError(e))),
@@ -51,7 +54,7 @@ impl PyMftEntry {
         Py::new(
             py,
             PyMftAttributesIter {
-                inner: Box::new(v.into_iter()),
+                inner: Box::new(attributes.into_iter()),
             },
         )
     }
@@ -105,13 +108,6 @@ impl PyIterProtocol for PyMftAttributesIter {
 }
 
 impl PyMftAttributesIter {
-    fn attribute_to_pyobject(attribute: MftAttribute) -> PyResult<PyObject> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        PyMftAttribute::from_mft_attribute(py, attribute).map(|entry| entry.to_object(py))
-    }
-
     fn next(&mut self) -> PyResult<Option<PyObject>> {
         Ok(self.inner.next())
     }
