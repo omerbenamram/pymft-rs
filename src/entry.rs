@@ -37,14 +37,14 @@ impl PyMftEntry {
         let gil = Python::acquire_gil();
         let py = gil.python();
 
-        let allocated: Vec<Result<MftAttribute, mft::err::Error>> =
+        let attributes: Vec<Result<MftAttribute, mft::err::Error>> =
             self.inner.iter_attributes().collect();
 
         Py::new(
             py,
             PyMftAttributesIter {
                 inner: Box::new(
-                    allocated
+                    attributes
                         .into_iter()
                         .map(PyMftAttributesIter::attribute_to_pyobject),
                 ),

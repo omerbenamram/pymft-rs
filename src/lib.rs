@@ -30,7 +30,6 @@ use crate::utils::{init_logging, FileOrFileLike};
 use csv::WriterBuilder;
 use mft::csv::FlatMftEntryWithName;
 use pyo3::types::{PyBytes, PyString};
-use std::collections::HashMap;
 
 pub trait ReadSeek: Read + Seek {
     fn tell(&mut self) -> io::Result<u64> {
@@ -98,7 +97,7 @@ impl PyMftParser {
     /// --
     ///
     /// Returns an iterator that yields the mft entries as python objects.
-    fn entries(&mut self) -> PyResult<PyMftEntriesIterator> {
+    fn entries(&mut self) -> PyResult<Py<PyMftEntriesIterator>> {
         self.records_iterator(Output::Python)
     }
 
@@ -106,7 +105,7 @@ impl PyMftParser {
     /// --
     ///
     /// Returns an iterator that yields mft entries as JSON.
-    fn entries_json(&mut self) -> PyResult<PyMftEntriesIterator> {
+    fn entries_json(&mut self) -> PyResult<Py<PyMftEntriesIterator>> {
         self.records_iterator(Output::JSON)
     }
 
@@ -114,13 +113,16 @@ impl PyMftParser {
     /// --
     ///
     /// Returns an iterator that yields mft entries CSV lines.
-    fn entries_csv(&mut self) -> PyResult<PyMftEntriesIterator> {
+    fn entries_csv(&mut self) -> PyResult<Py<PyMftEntriesIterator>> {
         self.records_iterator(Output::CSV)
     }
 }
 
 impl PyMftParser {
-    fn records_iterator(&mut self, output_format: Output) -> PyResult<PyMftEntriesIterator> {
+    fn records_iterator(&mut self, output_format: Output) -> PyResult<Py<PyMftEntriesIterator>> {
+        let gil = Python::acquire_gil();
+        let py = gil.python();
+
         let inner = match self.inner.take() {
             Some(inner) => inner,
             None => {
@@ -132,13 +134,16 @@ impl PyMftParser {
 
         let n_records = inner.get_entry_count();
 
-        Ok(PyMftEntriesIterator {
-            inner,
-            total_number_of_records: n_records,
-            current_record: 0,
-            output_format,
-            csv_header_written: false,
-        })
+        Py::new(
+            py,
+            PyMftEntriesIterator {
+                inner,
+                total_number_of_records: n_records,
+                current_record: 0,
+                output_format,
+                csv_header_written: false,
+            },
+        )
     }
 }
 
@@ -243,7 +248,7 @@ impl PyMftEntriesIterator {
 
 #[pyproto]
 impl PyIterProtocol for PyMftParser {
-    fn __iter__(slf: &mut PyClassShell<Self>) -> PyResult<PyMftEntriesIterator> {
+    fn __iter__(slf: &mut PyClassShell<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
         slf.entries()
     }
     fn __next__(_slf: &mut PyClassShell<Self>) -> PyResult<Option<PyObject>> {

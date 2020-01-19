@@ -2,9 +2,8 @@ use log::{Level, Log, Metadata, Record, SetLoggerError};
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use log::warn;
-use pyo3::prelude::*;
 use pyo3::types::{PyDateTime, PyString};
-use pyo3::{Py, ToPyObject};
+use pyo3::ToPyObject;
 use pyo3::{PyObject, PyResult, Python};
 use pyo3_file::PyFileLikeObject;
 
