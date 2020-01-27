@@ -3,8 +3,9 @@ use pyo3::prelude::*;
 
 use crate::attribute::PyMftAttribute;
 use crate::err::PyMftError;
-use mft::{MftAttribute, MftEntry, MftParser};
-use pyo3::{Py, PyIterProtocol, PyResult, Python};
+use mft::{MftEntry, MftParser};
+use pyo3::{Py, PyClassShell, PyIterProtocol, PyResult, Python};
+use std::ops::Try;
 use std::path::PathBuf;
 
 #[pyclass]
@@ -37,17 +38,24 @@ impl PyMftEntry {
         let gil = Python::acquire_gil();
         let py = gil.python();
 
-        let allocated: Vec<Result<MftAttribute, mft::err::Error>> =
-            self.inner.iter_attributes().collect();
+        let mut attributes = vec![];
+
+        for attribute_result in self.inner.iter_attributes() {
+            match attribute_result {
+                Ok(attribute) => match PyMftAttribute::from_mft_attribute(py, attribute)
+                    .map(|entry| entry.to_object(py))
+                {
+                    Ok(obj) => attributes.push(PyResult::from_ok(obj)),
+                    Err(e) => attributes.push(PyResult::from_ok(e.to_object(py))),
+                },
+                Err(e) => attributes.push(PyResult::from_error(PyErr::from(PyMftError(e)))),
+            }
+        }
 
         Py::new(
             py,
             PyMftAttributesIter {
-                inner: Box::new(
-                    allocated
-                        .into_iter()
-                        .map(PyMftAttributesIter::attribute_to_pyobject),
-                ),
+                inner: Box::new(attributes.into_iter()),
             },
         )
     }
@@ -69,14 +77,14 @@ impl PyMftEntry {
         Py::new(
             py,
             PyMftEntry {
-                entry_id: entry.header.record_number.clone(),
-                sequence: entry.header.sequence.clone(),
-                base_entry_id: entry.header.base_reference.entry.clone(),
+                entry_id: entry.header.record_number,
+                sequence: entry.header.sequence,
+                base_entry_id: entry.header.base_reference.entry,
                 base_entry_sequence: 0,
                 hard_link_count: 0,
                 flags: format!("{:?}", entry.header.flags),
-                used_entry_size: entry.header.used_entry_size.clone(),
-                total_entry_size: entry.header.total_entry_size.clone(),
+                used_entry_size: entry.header.used_entry_size,
+                total_entry_size: entry.header.total_entry_size,
                 inner: entry,
                 full_path,
             },
@@ -86,39 +94,29 @@ impl PyMftEntry {
 
 #[pyclass]
 pub struct PyMftAttributesIter {
-    inner: Box<dyn Iterator<Item = PyObject> + Send>,
+    inner: Box<dyn Iterator<Item = PyResult<PyObject>>>,
 }
 
 #[pyproto]
 impl PyIterProtocol for PyMftAttributesIter {
-    fn __iter__(slf: PyRefMut<Self>) -> PyResult<Py<PyMftAttributesIter>> {
+    fn __iter__(slf: &mut PyClassShell<Self>) -> PyResult<Py<PyMftAttributesIter>> {
         Ok(slf.into())
     }
 
-    fn __next__(mut slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
+    fn __next__(slf: &mut PyClassShell<Self>) -> PyResult<Option<PyObject>> {
         slf.next()
     }
 }
 
 impl PyMftAttributesIter {
-    fn attribute_to_pyobject(attribute_result: Result<MftAttribute, mft::err::Error>) -> PyObject {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        match attribute_result {
-            Ok(attribute) => {
-                match PyMftAttribute::from_mft_attribute(py, attribute)
-                    .map(|entry| entry.into_object(py))
-                {
-                    Ok(py_mft_entry) => py_mft_entry,
-                    Err(e) => e.into_object(py),
-                }
-            }
-            Err(e) => PyErr::from(PyMftError(e)).into_object(py),
-        }
-    }
-
     fn next(&mut self) -> PyResult<Option<PyObject>> {
-        Ok(self.inner.next())
+        // Extract the result out of the iterator, so iteration will return error, but can continue.
+        match self.inner.next() {
+            None => Ok(None),
+            Some(result) => match result {
+                Ok(e) => Ok(Some(e)),
+                Err(e) => Err(e),
+            },
+        }
     }
 }

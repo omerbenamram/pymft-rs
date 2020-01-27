@@ -21,6 +21,7 @@ def test_it_works(sample_mft):
 
         sample_record: PyMftEntry = next(parser.entries())
 
+        assert sample_record.entry_id == 0
         assert sample_record.full_path == "$MFT"
 
 
@@ -45,3 +46,16 @@ def test_datetimes_are_converted_properly(sample_mft):
         content = attribute.attribute_content
 
         assert content.created.tzinfo == datetime.timezone.utc
+
+
+def test_doesnt_yield_zeroed_entries(sample_mft):
+    parser = PyMftParser(str(sample_mft))
+        
+    for entry in parser.entries():
+        try:
+            for attribute in entry.attributes():
+                print(entry.entry_id)
+        except RuntimeError as e:
+            assert False, (e, entry.entry_id)
+
+

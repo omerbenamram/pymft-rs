@@ -1,5 +1,6 @@
-#![allow(clippy::new_ret_no_self)]
-#![feature(custom_attribute)]
+#![deny(unused_must_use)]
+#![cfg_attr(not(debug_assertions), deny(clippy::dbg_macro))]
+#![feature(try_trait)]
 
 mod attribute;
 mod entry;
@@ -19,7 +20,7 @@ use serde_json;
 use pyo3::prelude::*;
 
 use pyo3::exceptions::{NotImplementedError, RuntimeError};
-use pyo3::PyIterProtocol;
+use pyo3::{PyClassShell, PyIterProtocol};
 
 use crate::attribute::{
     PyMftAttribute, PyMftAttributeOther, PyMftAttributeX10, PyMftAttributeX20, PyMftAttributeX30,
@@ -30,6 +31,7 @@ use crate::err::PyMftError;
 use crate::utils::{init_logging, FileOrFileLike};
 use csv::WriterBuilder;
 use mft::csv::FlatMftEntryWithName;
+use mft::entry::ZERO_HEADER;
 use pyo3::types::{PyBytes, PyString};
 
 pub trait ReadSeek: Read + Seek {
@@ -59,7 +61,7 @@ pub struct PyMftParser {
 #[pymethods]
 impl PyMftParser {
     #[new]
-    fn new(obj: &PyRawObject, path_or_file_like: PyObject) -> PyResult<()> {
+    fn new(path_or_file_like: PyObject) -> PyResult<Self> {
         let file_or_file_like = FileOrFileLike::from_pyobject(path_or_file_like)?;
 
         let (boxed_read_seek, size) = match file_or_file_like {
@@ -76,13 +78,9 @@ impl PyMftParser {
 
         let parser = MftParser::from_read_seek(boxed_read_seek, size).map_err(PyMftError)?;
 
-        obj.init({
-            PyMftParser {
-                inner: Some(parser),
-            }
-        });
-
-        Ok(())
+        Ok(PyMftParser {
+            inner: Some(parser),
+        })
     }
 
     /// number_of_entries(self, /)
@@ -102,7 +100,7 @@ impl PyMftParser {
     /// --
     ///
     /// Returns an iterator that yields the mft entries as python objects.
-    fn entries(&mut self) -> PyResult<PyMftEntriesIterator> {
+    fn entries(&mut self) -> PyResult<Py<PyMftEntriesIterator>> {
         self.records_iterator(Output::Python)
     }
 
@@ -110,7 +108,7 @@ impl PyMftParser {
     /// --
     ///
     /// Returns an iterator that yields mft entries as JSON.
-    fn entries_json(&mut self) -> PyResult<PyMftEntriesIterator> {
+    fn entries_json(&mut self) -> PyResult<Py<PyMftEntriesIterator>> {
         self.records_iterator(Output::JSON)
     }
 
@@ -118,13 +116,16 @@ impl PyMftParser {
     /// --
     ///
     /// Returns an iterator that yields mft entries CSV lines.
-    fn entries_csv(&mut self) -> PyResult<PyMftEntriesIterator> {
+    fn entries_csv(&mut self) -> PyResult<Py<PyMftEntriesIterator>> {
         self.records_iterator(Output::CSV)
     }
 }
 
 impl PyMftParser {
-    fn records_iterator(&mut self, output_format: Output) -> PyResult<PyMftEntriesIterator> {
+    fn records_iterator(&mut self, output_format: Output) -> PyResult<Py<PyMftEntriesIterator>> {
+        let gil = Python::acquire_gil();
+        let py = gil.python();
+
         let inner = match self.inner.take() {
             Some(inner) => inner,
             None => {
@@ -136,13 +137,16 @@ impl PyMftParser {
 
         let n_records = inner.get_entry_count();
 
-        Ok(PyMftEntriesIterator {
-            inner,
-            total_number_of_records: n_records,
-            current_record: 0,
-            output_format,
-            csv_header_written: false,
-        })
+        Py::new(
+            py,
+            PyMftEntriesIterator {
+                inner,
+                total_number_of_records: n_records,
+                current_record: 0,
+                output_format,
+                csv_header_written: false,
+            },
+        )
     }
 }
 
@@ -164,13 +168,16 @@ impl PyMftEntriesIterator {
         match entry_result {
             Ok(entry) => {
                 match PyMftEntry::from_mft_entry(py, entry, &mut self.inner)
-                    .map(|entry| entry.into_object(py))
+                    .map(|entry| entry.to_object(py))
                 {
                     Ok(py_mft_entry) => py_mft_entry,
-                    Err(e) => e.into_object(py),
+                    Err(e) => e.to_object(py),
                 }
             }
-            Err(e) => PyErr::from(e).into_object(py),
+            Err(e) => {
+                let err = PyErr::from(e);
+                err.to_object(py)
+            }
         }
     }
 
@@ -181,12 +188,10 @@ impl PyMftEntriesIterator {
     ) -> PyObject {
         match entry_result {
             Ok(entry) => match serde_json::to_string(&entry) {
-                Ok(s) => PyString::new(py, &s).into_object(py),
-                Err(_e) => {
-                    PyErr::new::<RuntimeError, _>("JSON Serialization failed").into_object(py)
-                }
+                Ok(s) => PyString::new(py, &s).to_object(py),
+                Err(_e) => PyErr::new::<RuntimeError, _>("JSON Serialization failed").to_object(py),
             },
-            Err(e) => PyErr::from(e).into_object(py),
+            Err(e) => PyErr::from(e).to_object(py),
         }
     }
 
@@ -205,16 +210,16 @@ impl PyMftEntriesIterator {
                     Ok(()) => {}
                     Err(_e) => {
                         return PyErr::new::<RuntimeError, _>("CSV Serialization failed")
-                            .into_object(py)
+                            .to_object(py)
                     }
                 }
 
                 match writer.into_inner() {
-                    Ok(bytes) => PyBytes::new(py, &bytes).into_object(py),
-                    Err(e) => PyErr::new::<RuntimeError, _>(e.to_string()).into_object(py),
+                    Ok(bytes) => PyBytes::new(py, &bytes).to_object(py),
+                    Err(e) => PyErr::new::<RuntimeError, _>(e.to_string()).to_object(py),
                 }
             }
-            Err(e) => PyErr::from(e).into_object(py),
+            Err(e) => PyErr::from(e).to_object(py),
         }
     }
 
@@ -222,43 +227,51 @@ impl PyMftEntriesIterator {
         let gil = Python::acquire_gil();
         let py = gil.python();
 
-        if self.current_record == self.total_number_of_records {
-            return Ok(None);
+        loop {
+            if self.current_record == self.total_number_of_records {
+                return Ok(None);
+            }
+
+            let obj = match self.inner.get_entry(self.current_record) {
+                Ok(entry) => {
+                    if &entry.header.signature == ZERO_HEADER {
+                        self.current_record += 1;
+                        continue;
+                    }
+
+                    let ret = match self.output_format {
+                        Output::Python => self.entry_to_pyobject(Ok(entry), py),
+                        Output::JSON => self.entry_to_json(Ok(entry), py),
+                        Output::CSV => self.entry_to_csv(Ok(entry), py),
+                    };
+
+                    Ok(Some(ret))
+                }
+                Err(error) => Ok(Some(PyErr::from(PyMftError(error)).to_object(py))),
+            };
+
+            self.current_record += 1;
+            return obj;
         }
-
-        let entry_result = self
-            .inner
-            .get_entry(self.current_record)
-            .map_err(PyMftError);
-
-        self.current_record += 1;
-
-        let entry_result = match self.output_format {
-            Output::Python => self.entry_to_pyobject(entry_result, py),
-            Output::JSON => self.entry_to_json(entry_result, py),
-            Output::CSV => self.entry_to_csv(entry_result, py),
-        };
-
-        Ok(Some(entry_result))
     }
 }
 
 #[pyproto]
 impl PyIterProtocol for PyMftParser {
-    fn __iter__(mut slf: PyRefMut<Self>) -> PyResult<PyMftEntriesIterator> {
+    fn __iter__(slf: &mut PyClassShell<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
         slf.entries()
     }
-    fn __next__(_slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
+    fn __next__(_slf: &mut PyClassShell<Self>) -> PyResult<Option<PyObject>> {
         Err(PyErr::new::<NotImplementedError, _>("Using `next()` over `PyMftParser` is not supported. Try iterating over `PyMftParser(...).entries()`"))
     }
 }
 
 #[pyproto]
 impl PyIterProtocol for PyMftEntriesIterator {
-    fn __iter__(slf: PyRefMut<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
+    fn __iter__(slf: &mut PyClassShell<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
         Ok(slf.into())
     }
-    fn __next__(mut slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
+    fn __next__(slf: &mut PyClassShell<Self>) -> PyResult<Option<PyObject>> {
         slf.next()
     }
 }

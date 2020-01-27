@@ -3,7 +3,7 @@ use log::{Level, Log, Metadata, Record, SetLoggerError};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use log::warn;
 use pyo3::types::{PyDateTime, PyString};
-use pyo3::{Py, ToPyObject};
+use pyo3::ToPyObject;
 use pyo3::{PyObject, PyResult, Python};
 use pyo3_file::PyFileLikeObject;
 
@@ -85,7 +85,7 @@ pub fn init_logging(py: Python) -> Result<(), SetLoggerError> {
     Ok(())
 }
 
-pub fn date_to_pyobject(date: &DateTime<Utc>) -> PyResult<Py<PyDateTime>> {
+pub fn date_to_pyobject(date: &DateTime<Utc>) -> PyResult<PyObject> {
     let gil = Python::acquire_gil();
     let py = gil.python();
 
@@ -107,6 +107,7 @@ pub fn date_to_pyobject(date: &DateTime<Utc>) -> PyResult<Py<PyDateTime>> {
         // Fallback to naive timestamps (None) if for some reason `datetime.timezone.utc` is not present.
         utc.as_ref(),
     )
+    .map(|dt| dt.to_object(py))
 }
 
 pub fn get_utc() -> PyResult<PyObject> {

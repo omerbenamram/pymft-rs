@@ -10,7 +10,7 @@ use num_traits::cast::ToPrimitive;
 
 use mft::attribute::x20::AttributeListAttr;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDateTime};
+
 use pyo3::{ffi, Py, PyResult, Python};
 
 use crate::utils::date_to_pyobject;
@@ -51,7 +51,7 @@ impl PyMftAttribute {
                         false
                     }
                 },
-                data_size: attr.header.record_length.clone(),
+                data_size: attr.header.record_length,
                 inner: attr,
             },
         )
@@ -76,25 +76,25 @@ impl PyMftAttribute {
 
         Ok(match &self.inner.data {
             MftAttributeContent::AttrX10(info) => {
-                PyMftAttributeX10::from_x10(py, info.clone())?.into_object(py)
+                PyMftAttributeX10::from_x10(py, info.clone())?.to_object(py)
             }
             MftAttributeContent::AttrX20(info) => {
-                PyMftAttributeX20::from_x20(py, info.clone())?.into_object(py)
+                PyMftAttributeX20::from_x20(py, info.clone())?.to_object(py)
             }
             MftAttributeContent::AttrX30(info) => {
-                PyMftAttributeX30::from_x30(py, info.clone())?.into_object(py)
+                PyMftAttributeX30::from_x30(py, info.clone())?.to_object(py)
             }
             MftAttributeContent::AttrX40(info) => {
-                PyMftAttributeX40::from_x40(py, info.clone())?.into_object(py)
+                PyMftAttributeX40::from_x40(py, info.clone())?.to_object(py)
             }
             MftAttributeContent::AttrX80(info) => {
-                PyMftAttributeX80::from_x80(py, info.clone())?.into_object(py)
+                PyMftAttributeX80::from_x80(py, info.clone())?.to_object(py)
             }
             MftAttributeContent::AttrX90(info) => {
-                PyMftAttributeX90::from_x90(py, info.clone())?.into_object(py)
+                PyMftAttributeX90::from_x90(py, info.clone())?.to_object(py)
             }
             MftAttributeContent::Raw(raw) => {
-                PyMftAttributeOther::from_raw(py, raw.clone())?.into_object(py)
+                PyMftAttributeOther::from_raw(py, raw.clone())?.to_object(py)
             }
             MftAttributeContent::None => unsafe { PyObject::from_borrowed_ptr(py, ffi::Py_None()) },
         })
@@ -141,20 +141,20 @@ impl PyMftAttributeX10 {
 #[pymethods]
 impl PyMftAttributeX10 {
     #[getter]
-    pub fn created(&self) -> PyResult<Py<PyDateTime>> {
+    pub fn created(&self) -> PyResult<PyObject> {
         date_to_pyobject(&self.inner.created)
     }
     #[getter]
-    pub fn modified(&self) -> PyResult<Py<PyDateTime>> {
+    pub fn modified(&self) -> PyResult<PyObject> {
         date_to_pyobject(&self.inner.modified)
     }
     #[getter]
-    pub fn mft_modified(&self) -> PyResult<Py<PyDateTime>> {
+    pub fn mft_modified(&self) -> PyResult<PyObject> {
         date_to_pyobject(&self.inner.mft_modified)
     }
 
     #[getter]
-    pub fn accessed(&self) -> PyResult<Py<PyDateTime>> {
+    pub fn accessed(&self) -> PyResult<PyObject> {
         date_to_pyobject(&self.inner.accessed)
     }
 
@@ -241,20 +241,20 @@ impl PyMftAttributeX30 {
 #[pymethods]
 impl PyMftAttributeX30 {
     #[getter]
-    pub fn created(&self) -> PyResult<Py<PyDateTime>> {
+    pub fn created(&self) -> PyResult<PyObject> {
         date_to_pyobject(&self.inner.created)
     }
     #[getter]
-    pub fn modified(&self) -> PyResult<Py<PyDateTime>> {
+    pub fn modified(&self) -> PyResult<PyObject> {
         date_to_pyobject(&self.inner.modified)
     }
     #[getter]
-    pub fn mft_modified(&self) -> PyResult<Py<PyDateTime>> {
+    pub fn mft_modified(&self) -> PyResult<PyObject> {
         date_to_pyobject(&self.inner.mft_modified)
     }
 
     #[getter]
-    pub fn accessed(&self) -> PyResult<Py<PyDateTime>> {
+    pub fn accessed(&self) -> PyResult<PyObject> {
         date_to_pyobject(&self.inner.accessed)
     }
 
@@ -289,17 +289,17 @@ impl PyMftAttributeX40 {
                 birth_volume_id: attr
                     .birth_volume_id
                     .as_ref()
-                    .and_then(|a| Some(a.to_string()))
+                    .map(|a| a.to_string())
                     .unwrap_or_default(),
                 birth_object_id: attr
                     .birth_object_id
                     .as_ref()
-                    .and_then(|a| Some(a.to_string()))
+                    .map(|a| a.to_string())
                     .unwrap_or_default(),
                 domain_id: attr
                     .domain_id
                     .as_ref()
-                    .and_then(|a| Some(a.to_string()))
+                    .map(|a| a.to_string())
                     .unwrap_or_default(),
             },
         )
@@ -320,11 +320,8 @@ impl PyMftAttributeX80 {
 #[pymethods]
 impl PyMftAttributeX80 {
     #[getter]
-    pub fn data(&self) -> PyResult<Py<PyBytes>> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        Ok(PyBytes::new(py, &self.inner.data()))
+    pub fn data(&self) -> &[u8] {
+        self.inner.data()
     }
 }
 
@@ -373,10 +370,7 @@ impl PyMftAttributeOther {
 #[pymethods]
 impl PyMftAttributeOther {
     #[getter]
-    pub fn data(&self) -> PyResult<Py<PyBytes>> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        Ok(PyBytes::new(py, &self.inner.data))
+    pub fn data(&self) -> &[u8] {
+        &self.inner.data
     }
 }
