@@ -1,5 +1,6 @@
 #![deny(unused_must_use)]
 #![cfg_attr(not(debug_assertions), deny(clippy::dbg_macro))]
+#![feature(try_trait)]
 
 mod attribute;
 mod entry;
