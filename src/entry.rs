@@ -45,10 +45,10 @@ impl PyMftEntry {
                 Ok(attribute) => match PyMftAttribute::from_mft_attribute(py, attribute)
                     .map(|entry| entry.to_object(py))
                 {
-                    Ok(obj) => attributes.push(PyResult::from_ok(obj)),
-                    Err(e) => attributes.push(PyResult::from_ok(e.to_object(py))),
+                    Ok(obj) => attributes.push(obj),
+                    Err(e) => attributes.push(e.to_object(py)),
                 },
-                Err(e) => attributes.push(PyResult::from_error(PyErr::from(PyMftError(e)))),
+                Err(e) => attributes.push(PyErr::from(PyMftError(e)).to_object(py)),
             }
         }
 
@@ -94,7 +94,7 @@ impl PyMftEntry {
 
 #[pyclass]
 pub struct PyMftAttributesIter {
-    inner: Box<dyn Iterator<Item = PyResult<PyObject>>>,
+    inner: Box<dyn Iterator<Item = PyObject>>,
 }
 
 #[pyproto]
@@ -111,12 +111,6 @@ impl PyIterProtocol for PyMftAttributesIter {
 impl PyMftAttributesIter {
     fn next(&mut self) -> PyResult<Option<PyObject>> {
         // Extract the result out of the iterator, so iteration will return error, but can continue.
-        match self.inner.next() {
-            None => Ok(None),
-            Some(result) => match result {
-                Ok(e) => Ok(Some(e)),
-                Err(e) => Err(e),
-            },
-        }
+        Ok(self.inner.next())
     }
 }
