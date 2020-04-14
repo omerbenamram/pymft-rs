@@ -626,12 +626,12 @@ dependencies = [
 
 [[package]]
 name = "mft"
-version = "0.5.1"
+version = "0.5.3"
 dependencies = [
  "chrono",
  "csv",
  "log",
- "mft 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "mft 0.5.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "num-traits",
  "pyo3",
  "pyo3-file",
@@ -640,9 +640,9 @@ dependencies = [
 
 [[package]]
 name = "mft"
-version = "0.5.1"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "910052c598b6b8e603db14a4ee60fe09961a77fefd3c0d7491aa064bc78a9e63"
+checksum = "a66750cc64a6a605a7322160d83cc25723dec74d829de93dee68b4fa8e9e1aaa"
 dependencies = [
  "anyhow",
  "bitflags",
