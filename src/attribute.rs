@@ -8,10 +8,9 @@ use mft::{FileNameAttr, MftAttribute, StandardInfoAttr};
 
 use num_traits::cast::ToPrimitive;
 
-use mft::attribute::x20::AttributeListAttr;
+use mft::attribute::x20::{AttributeListAttr, AttributeListEntry};
 use pyo3::prelude::*;
-
-use pyo3::{ffi, Py, PyResult, Python};
+use pyo3::{ffi, Py, PyResult, Python, ToPyObject, PyIterProtocol};
 
 use crate::utils::date_to_pyobject;
 
@@ -165,22 +164,54 @@ impl PyMftAttributeX10 {
 }
 
 #[pyclass]
-pub struct PyMftAttributeX20 {
-    inner: AttributeListAttr,
+pub struct PyMftAttributeX20Entry {
     #[pyo3(get)]
     pub attribute_type: u32,
     #[pyo3(get)]
-    pub record_length: u16,
-    #[pyo3(get)]
-    pub first_vcn: u64,
-    #[pyo3(get)]
-    pub parent_entry_id: u64,
-    #[pyo3(get)]
-    pub parent_entry_sequence: u16,
-    #[pyo3(get)]
-    pub attribute_id: u16,
+    pub lowest_vcn: u64,
     #[pyo3(get)]
     pub name: String,
+}
+
+impl PyMftAttributeX20Entry {
+    pub fn from_x20_entry(py: Python, attr: &AttributeListEntry) -> PyResult<Py<Self>> {
+        Py::new(
+            py,
+            PyMftAttributeX20Entry {
+                attribute_type: attr.attribute_type,
+                lowest_vcn: attr.lowest_vcn,
+                name: attr.name.clone(),
+            },
+        )
+    }
+}
+
+#[pyclass]
+pub struct PyMftAttributeX20 {
+    inner: AttributeListAttr,
+}
+
+#[pyclass]
+pub struct PyMftX20EntriesIter {
+    inner: Box<dyn Iterator<Item = PyObject>>,
+}
+
+#[pyproto]
+impl PyIterProtocol for PyMftX20EntriesIter {
+    fn __iter__(slf: PyRefMut<Self>) -> PyResult<Py<Self>> {
+        Ok(slf.into())
+    }
+
+    fn __next__(mut slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
+        slf.next()
+    }
+}
+
+impl PyMftX20EntriesIter {
+    fn next(&mut self) -> PyResult<Option<PyObject>> {
+        // Extract the result out of the iterator, so iteration will return error, but can continue.
+        Ok(self.inner.next())
+    }
 }
 
 impl PyMftAttributeX20 {
@@ -188,14 +219,31 @@ impl PyMftAttributeX20 {
         Py::new(
             py,
             PyMftAttributeX20 {
-                parent_entry_id: attr.base_reference.entry,
-                parent_entry_sequence: attr.base_reference.sequence,
-                attribute_id: attr.attribute_id,
-                name: attr.name.clone(),
-                attribute_type: attr.attribute_type,
-                record_length: attr.record_length,
-                first_vcn: attr.first_vcn,
-                inner: attr,
+                inner: attr
+            },
+        )
+    }
+}
+
+#[pymethods]
+impl PyMftAttributeX20 {
+    pub fn entries(&self) -> PyResult<Py<PyMftX20EntriesIter>> {
+        let gil = Python::acquire_gil();
+        let py = gil.python();
+
+        let mut attributes = vec![];
+
+        for entry in &self.inner.entries {
+            match PyMftAttributeX20Entry::from_x20_entry(py, entry).map(|entry| entry.to_object(py)) {
+                Ok(obj) => { attributes.push(obj) }
+                Err(e) => { attributes.push(e.to_object(py)) }
+            }
+        }
+
+        Py::new(
+            py,
+            PyMftX20EntriesIter {
+                inner: Box::new(attributes.into_iter())
             },
         )
     }
