@@ -10,10 +10,9 @@ use num_traits::cast::ToPrimitive;
 
 use mft::attribute::x20::{AttributeListAttr, AttributeListEntry};
 use pyo3::prelude::*;
-use pyo3::{ffi, Py, PyResult, Python, ToPyObject};
+use pyo3::{ffi, Py, PyResult, Python, ToPyObject, PyIterProtocol};
 
 use crate::utils::date_to_pyobject;
-use crate::entry::PyMftAttributesIter;
 
 #[pyclass]
 pub struct PyMftAttribute {
@@ -192,6 +191,29 @@ pub struct PyMftAttributeX20 {
     inner: AttributeListAttr,
 }
 
+#[pyclass]
+pub struct PyMftX20EntriesIter {
+    inner: Box<dyn Iterator<Item = PyObject>>,
+}
+
+#[pyproto]
+impl PyIterProtocol for PyMftX20EntriesIter {
+    fn __iter__(slf: PyRefMut<Self>) -> PyResult<Py<Self>> {
+        Ok(slf.into())
+    }
+
+    fn __next__(mut slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
+        slf.next()
+    }
+}
+
+impl PyMftX20EntriesIter {
+    fn next(&mut self) -> PyResult<Option<PyObject>> {
+        // Extract the result out of the iterator, so iteration will return error, but can continue.
+        Ok(self.inner.next())
+    }
+}
+
 impl PyMftAttributeX20 {
     pub fn from_x20(py: Python, attr: AttributeListAttr) -> PyResult<Py<Self>> {
         Py::new(
@@ -205,7 +227,7 @@ impl PyMftAttributeX20 {
 
 #[pymethods]
 impl PyMftAttributeX20 {
-    pub fn entries(&self) -> PyResult<Py<PyMftAttributesIter>> {
+    pub fn entries(&self) -> PyResult<Py<PyMftX20EntriesIter>> {
         let gil = Python::acquire_gil();
         let py = gil.python();
 
@@ -220,7 +242,7 @@ impl PyMftAttributeX20 {
 
         Py::new(
             py,
-            PyMftAttributesIter {
+            PyMftX20EntriesIter {
                 inner: Box::new(attributes.into_iter())
             },
         )

@@ -93,7 +93,7 @@ impl PyMftEntry {
 
 #[pyclass]
 pub struct PyMftAttributesIter {
-    pub(crate) inner: Box<dyn Iterator<Item = PyObject>>,
+    inner: Box<dyn Iterator<Item = PyObject>>,
 }
 
 #[pyproto]
