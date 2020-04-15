@@ -5,7 +5,6 @@ use crate::attribute::PyMftAttribute;
 use crate::err::PyMftError;
 use mft::{MftEntry, MftParser};
 use pyo3::{Py, PyClassShell, PyIterProtocol, PyResult, Python};
-use std::ops::Try;
 use std::path::PathBuf;
 
 #[pyclass]
@@ -94,7 +93,7 @@ impl PyMftEntry {
 
 #[pyclass]
 pub struct PyMftAttributesIter {
-    inner: Box<dyn Iterator<Item = PyObject>>,
+    pub(crate) inner: Box<dyn Iterator<Item = PyObject>>,
 }
 
 #[pyproto]
