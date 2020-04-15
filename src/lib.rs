@@ -20,7 +20,7 @@ use serde_json;
 use pyo3::prelude::*;
 
 use pyo3::exceptions::{NotImplementedError, RuntimeError};
-use pyo3::{PyClassShell, PyIterProtocol};
+use pyo3::{PyIterProtocol};
 
 use crate::attribute::{
     PyMftAttribute, PyMftAttributeOther, PyMftAttributeX10, PyMftAttributeX20, PyMftAttributeX30,
@@ -258,20 +258,20 @@ impl PyMftEntriesIterator {
 
 #[pyproto]
 impl PyIterProtocol for PyMftParser {
-    fn __iter__(slf: &mut PyClassShell<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
+    fn __iter__(mut slf: PyRefMut<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
         slf.entries()
     }
-    fn __next__(_slf: &mut PyClassShell<Self>) -> PyResult<Option<PyObject>> {
+    fn __next__(_slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
         Err(PyErr::new::<NotImplementedError, _>("Using `next()` over `PyMftParser` is not supported. Try iterating over `PyMftParser(...).entries()`"))
     }
 }
 
 #[pyproto]
 impl PyIterProtocol for PyMftEntriesIterator {
-    fn __iter__(slf: &mut PyClassShell<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
+    fn __iter__(slf: PyRefMut<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
         Ok(slf.into())
     }
-    fn __next__(slf: &mut PyClassShell<Self>) -> PyResult<Option<PyObject>> {
+    fn __next__(mut slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
         slf.next()
     }
 }
