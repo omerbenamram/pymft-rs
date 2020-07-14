@@ -603,20 +603,6 @@ checksum = "3728d817d99e5ac407411fa471ff9800a778d88a24685968b36824eaf4bee400"
 [[package]]
 name = "mft"
 version = "0.5.3"
-dependencies = [
- "chrono",
- "csv",
- "log",
- "mft 0.5.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "num-traits",
- "pyo3",
- "pyo3-file",
- "serde_json",
-]
-
-[[package]]
-name = "mft"
-version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a66750cc64a6a605a7322160d83cc25723dec74d829de93dee68b4fa8e9e1aaa"
 dependencies = [
@@ -641,6 +627,20 @@ dependencies = [
  "skeptic",
  "thiserror",
  "winstructs",
+]
+
+[[package]]
+name = "mft"
+version = "0.5.4"
+dependencies = [
+ "chrono",
+ "csv",
+ "log",
+ "mft 0.5.3",
+ "num-traits",
+ "pyo3",
+ "pyo3-file",
+ "serde_json",
 ]
 
 [[package]]
