@@ -1,6 +1,5 @@
 #![deny(unused_must_use)]
 #![cfg_attr(not(debug_assertions), deny(clippy::dbg_macro))]
-#![feature(try_trait)]
 
 mod attribute;
 mod entry;
@@ -55,7 +54,7 @@ pub enum Output {
 /// Returns an instance of the parser.
 /// Works on both a path (string), or a file-like object.
 pub struct PyMftParser {
-    inner: Option<MftParser<Box<dyn ReadSeek>>>,
+    inner: Option<MftParser<Box<dyn ReadSeek + Send>>>,
 }
 
 #[pymethods]
@@ -71,9 +70,9 @@ impl PyMftParser {
 
                 let reader = BufReader::with_capacity(4096, file);
 
-                (Box::new(reader) as Box<dyn ReadSeek>, Some(size))
+                (Box::new(reader) as Box<dyn ReadSeek + Send>, Some(size))
             }
-            FileOrFileLike::FileLike(f) => (Box::new(f) as Box<dyn ReadSeek>, None),
+            FileOrFileLike::FileLike(f) => (Box::new(f) as Box<dyn ReadSeek + Send>, None),
         };
 
         let parser = MftParser::from_read_seek(boxed_read_seek, size).map_err(PyMftError)?;
@@ -152,7 +151,7 @@ impl PyMftParser {
 
 #[pyclass]
 pub struct PyMftEntriesIterator {
-    inner: MftParser<Box<dyn ReadSeek>>,
+    inner: MftParser<Box<dyn ReadSeek + Send>>,
     total_number_of_records: u64,
     current_record: u64,
     output_format: Output,

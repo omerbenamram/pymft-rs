@@ -193,7 +193,7 @@ pub struct PyMftAttributeX20 {
 
 #[pyclass]
 pub struct PyMftX20EntriesIter {
-    inner: Box<dyn Iterator<Item = PyObject>>,
+    inner: Box<dyn Iterator<Item = PyObject> + Send>,
 }
 
 #[pyproto]
