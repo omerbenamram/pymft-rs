@@ -20,7 +20,7 @@ install_requires = ["setuptools-rust"]
 
 setup(
     name="mft",
-    version="0.5.4",
+    version="0.5.5",
     classifiers=[
         "License :: OSI Approved :: MIT License",
         "Development Status :: 3 - Alpha",
