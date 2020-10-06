@@ -4,6 +4,8 @@ use pyo3::prelude::*;
 use crate::attribute::PyMftAttribute;
 use crate::err::PyMftError;
 use mft::{MftEntry, MftParser};
+use mft::attribute::MftAttributeType;
+use mft::attribute::header::ResidentialHeader;
 use pyo3::{Py, PyIterProtocol, PyResult, Python};
 use std::path::PathBuf;
 
@@ -29,6 +31,8 @@ pub struct PyMftEntry {
     pub total_entry_size: u32,
     #[pyo3(get)]
     pub full_path: String,
+    #[pyo3(get)]
+    pub file_size: u64,
 }
 
 #[pymethods]
@@ -73,6 +77,18 @@ impl PyMftEntry {
             .to_string_lossy()
             .to_string();
 
+        let file_size = entry
+            .iter_attributes_matching(Some(vec![
+                MftAttributeType::DATA,
+            ]))
+            .find_map(Result::ok)
+            .map_or(0, |attr| {
+                match &attr.header.residential_header {
+                    ResidentialHeader::Resident(r) => u64::from(r.data_size),
+                    ResidentialHeader::NonResident(nr) => nr.file_size,
+                }
+            });
+
         Py::new(
             py,
             PyMftEntry {
@@ -86,6 +102,7 @@ impl PyMftEntry {
                 total_entry_size: entry.header.total_entry_size,
                 inner: entry,
                 full_path,
+                file_size,
             },
         )
     }
