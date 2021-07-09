@@ -115,7 +115,7 @@ pub fn get_utc() -> PyResult<PyObject> {
     let py = gil.python();
 
     let datetime = py.import("datetime")?;
-    let tz: PyObject = datetime.get("timezone")?.into();
+    let tz: PyObject = datetime.getattr("timezone")?.into();
     let utc = tz.getattr(py, "utc")?;
 
     Ok(utc)
