@@ -1,6 +1,6 @@
 [package]
 name = "mft"
-version = "0.5.5"
+version = "0.5.6"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
 edition = "2018"
 
