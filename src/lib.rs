@@ -14,12 +14,9 @@ use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 
-use serde_json;
-
 use pyo3::prelude::*;
-
-use pyo3::exceptions::{NotImplementedError, RuntimeError};
-use pyo3::{PyIterProtocol};
+use pyo3::PyIterProtocol;
+use pyo3::exceptions;
 
 use crate::attribute::{
     PyMftAttribute, PyMftAttributeOther, PyMftAttributeX10, PyMftAttributeX20, PyMftAttributeX30,
@@ -89,7 +86,7 @@ impl PyMftParser {
     fn number_of_entries(&self) -> PyResult<u64> {
         match self.inner {
             Some(ref inner) => Ok(inner.get_entry_count()),
-            None => Err(PyErr::new::<RuntimeError, _>(
+            None => Err(PyErr::new::<exceptions::PyRuntimeError, _>(
                 "Cannot call this method before object is initialized",
             )),
         }
@@ -128,7 +125,7 @@ impl PyMftParser {
         let inner = match self.inner.take() {
             Some(inner) => inner,
             None => {
-                return Err(PyErr::new::<RuntimeError, _>(
+                return Err(PyErr::new::<exceptions::PyRuntimeError, _>(
                     "PyMftParser can only be used once",
                 ));
             }
@@ -188,7 +185,7 @@ impl PyMftEntriesIterator {
         match entry_result {
             Ok(entry) => match serde_json::to_string(&entry) {
                 Ok(s) => PyString::new(py, &s).to_object(py),
-                Err(_e) => PyErr::new::<RuntimeError, _>("JSON Serialization failed").to_object(py),
+                Err(_e) => PyErr::new::<exceptions::PyRuntimeError, _>("JSON Serialization failed").to_object(py),
             },
             Err(e) => PyErr::from(e).to_object(py),
         }
@@ -208,14 +205,14 @@ impl PyMftEntriesIterator {
                 match writer.serialize(FlatMftEntryWithName::from_entry(&entry, &mut self.inner)) {
                     Ok(()) => {}
                     Err(_e) => {
-                        return PyErr::new::<RuntimeError, _>("CSV Serialization failed")
+                        return PyErr::new::<exceptions::PyRuntimeError, _>("CSV Serialization failed")
                             .to_object(py)
                     }
                 }
 
                 match writer.into_inner() {
                     Ok(bytes) => PyBytes::new(py, &bytes).to_object(py),
-                    Err(e) => PyErr::new::<RuntimeError, _>(e.to_string()).to_object(py),
+                    Err(e) => PyErr::new::<exceptions::PyRuntimeError, _>(e.to_string()).to_object(py),
                 }
             }
             Err(e) => PyErr::from(e).to_object(py),
@@ -261,7 +258,7 @@ impl PyIterProtocol for PyMftParser {
         slf.entries()
     }
     fn __next__(_slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
-        Err(PyErr::new::<NotImplementedError, _>("Using `next()` over `PyMftParser` is not supported. Try iterating over `PyMftParser(...).entries()`"))
+        Err(PyErr::new::<exceptions::PyNotImplementedError, _>("Using `next()` over `PyMftParser` is not supported. Try iterating over `PyMftParser(...).entries()`"))
     }
 }
 
