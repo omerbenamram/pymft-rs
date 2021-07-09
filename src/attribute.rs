@@ -10,7 +10,7 @@ use num_traits::cast::ToPrimitive;
 
 use mft::attribute::x20::{AttributeListAttr, AttributeListEntry};
 use pyo3::prelude::*;
-use pyo3::{ffi, Py, PyResult, Python, ToPyObject, PyIterProtocol};
+use pyo3::{ffi, Py, PyIterProtocol, PyResult, Python, ToPyObject};
 
 use crate::utils::date_to_pyobject;
 
@@ -44,11 +44,10 @@ impl PyMftAttribute {
                 name: attr.header.name.clone(),
                 data_flags: format!("{:?}", &attr.header.data_flags),
                 is_resident: {
-                    if let ResidentialHeader::Resident(_) = attr.header.residential_header {
-                        true
-                    } else {
-                        false
-                    }
+                    matches!(
+                        attr.header.residential_header,
+                        ResidentialHeader::Resident(_)
+                    )
                 },
                 data_size: attr.header.record_length,
                 inner: attr,
@@ -216,12 +215,7 @@ impl PyMftX20EntriesIter {
 
 impl PyMftAttributeX20 {
     pub fn from_x20(py: Python, attr: AttributeListAttr) -> PyResult<Py<Self>> {
-        Py::new(
-            py,
-            PyMftAttributeX20 {
-                inner: attr
-            },
-        )
+        Py::new(py, PyMftAttributeX20 { inner: attr })
     }
 }
 
@@ -234,16 +228,17 @@ impl PyMftAttributeX20 {
         let mut attributes = vec![];
 
         for entry in &self.inner.entries {
-            match PyMftAttributeX20Entry::from_x20_entry(py, entry).map(|entry| entry.to_object(py)) {
-                Ok(obj) => { attributes.push(obj) }
-                Err(e) => { attributes.push(e.to_object(py)) }
+            match PyMftAttributeX20Entry::from_x20_entry(py, entry).map(|entry| entry.to_object(py))
+            {
+                Ok(obj) => attributes.push(obj),
+                Err(e) => attributes.push(e.to_object(py)),
             }
         }
 
         Py::new(
             py,
             PyMftX20EntriesIter {
-                inner: Box::new(attributes.into_iter())
+                inner: Box::new(attributes.into_iter()),
             },
         )
     }
