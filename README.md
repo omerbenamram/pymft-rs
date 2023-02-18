@@ -1,7 +1,7 @@
 <div align="center">
   <!-- Downloads -->
-  <a href="https://pypi.org/project/evtx/">
-    <img src="https://pepy.tech/badge/evtx"
+  <a href="https://pypi.org/project/mft/">
+    <img src="https://pepy.tech/badge/mft"
       alt="Download" />
   </a>
 </div>
