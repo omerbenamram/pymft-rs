@@ -1,16 +1,16 @@
-use mft::attribute::header::ResidentialHeader;
-use mft::attribute::raw::RawAttribute;
-use mft::attribute::x40::ObjectIdAttr;
-use mft::attribute::x80::DataAttr;
-use mft::attribute::x90::IndexRootAttr;
-use mft::attribute::MftAttributeContent;
-use mft::{FileNameAttr, MftAttribute, StandardInfoAttr};
+use mft_rs::attribute::header::ResidentialHeader;
+use mft_rs::attribute::raw::RawAttribute;
+use mft_rs::attribute::x40::ObjectIdAttr;
+use mft_rs::attribute::x80::DataAttr;
+use mft_rs::attribute::x90::IndexRootAttr;
+use mft_rs::attribute::MftAttributeContent;
+use mft_rs::{FileNameAttr, MftAttribute, StandardInfoAttr};
 
 use num_traits::cast::ToPrimitive;
 
-use mft::attribute::x20::{AttributeListAttr, AttributeListEntry};
+use mft_rs::attribute::x20::{AttributeListAttr, AttributeListEntry};
 use pyo3::prelude::*;
-use pyo3::{ffi, Py, PyIterProtocol, PyResult, Python, ToPyObject};
+use pyo3::{ffi, Py, PyResult, Python, ToPyObject};
 
 use crate::utils::date_to_pyobject;
 
@@ -69,32 +69,33 @@ impl PyMftAttribute {
     /// - `None` (if attribute content is non-resident)
     #[getter]
     pub fn attribute_content(&self) -> PyResult<PyObject> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        Ok(match &self.inner.data {
-            MftAttributeContent::AttrX10(info) => {
-                PyMftAttributeX10::from_x10(py, info.clone())?.to_object(py)
-            }
-            MftAttributeContent::AttrX20(info) => {
-                PyMftAttributeX20::from_x20(py, info.clone())?.to_object(py)
-            }
-            MftAttributeContent::AttrX30(info) => {
-                PyMftAttributeX30::from_x30(py, info.clone())?.to_object(py)
-            }
-            MftAttributeContent::AttrX40(info) => {
-                PyMftAttributeX40::from_x40(py, info.clone())?.to_object(py)
-            }
-            MftAttributeContent::AttrX80(info) => {
-                PyMftAttributeX80::from_x80(py, info.clone())?.to_object(py)
-            }
-            MftAttributeContent::AttrX90(info) => {
-                PyMftAttributeX90::from_x90(py, info.clone())?.to_object(py)
-            }
-            MftAttributeContent::Raw(raw) => {
-                PyMftAttributeOther::from_raw(py, raw.clone())?.to_object(py)
-            }
-            MftAttributeContent::None => unsafe { PyObject::from_borrowed_ptr(py, ffi::Py_None()) },
+        Python::with_gil(|py| {
+            Ok(match &self.inner.data {
+                MftAttributeContent::AttrX10(info) => {
+                    PyMftAttributeX10::from_x10(py, info.clone())?.to_object(py)
+                }
+                MftAttributeContent::AttrX20(info) => {
+                    PyMftAttributeX20::from_x20(py, info.clone())?.to_object(py)
+                }
+                MftAttributeContent::AttrX30(info) => {
+                    PyMftAttributeX30::from_x30(py, info.clone())?.to_object(py)
+                }
+                MftAttributeContent::AttrX40(info) => {
+                    PyMftAttributeX40::from_x40(py, info.clone())?.to_object(py)
+                }
+                MftAttributeContent::AttrX80(info) => {
+                    PyMftAttributeX80::from_x80(py, info.clone())?.to_object(py)
+                }
+                MftAttributeContent::AttrX90(info) => {
+                    PyMftAttributeX90::from_x90(py, info.clone())?.to_object(py)
+                }
+                MftAttributeContent::Raw(raw) => {
+                    PyMftAttributeOther::from_raw(py, raw.clone())?.to_object(py)
+                }
+                MftAttributeContent::None => unsafe {
+                    PyObject::from_borrowed_ptr(py, ffi::Py_None())
+                },
+            })
         })
     }
 }
@@ -195,8 +196,8 @@ pub struct PyMftX20EntriesIter {
     inner: Box<dyn Iterator<Item = PyObject> + Send>,
 }
 
-#[pyproto]
-impl PyIterProtocol for PyMftX20EntriesIter {
+#[pymethods]
+impl PyMftX20EntriesIter {
     fn __iter__(slf: PyRefMut<Self>) -> PyResult<Py<Self>> {
         Ok(slf.into())
     }
@@ -222,25 +223,25 @@ impl PyMftAttributeX20 {
 #[pymethods]
 impl PyMftAttributeX20 {
     pub fn entries(&self) -> PyResult<Py<PyMftX20EntriesIter>> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
+        Python::with_gil(|py| {
+            let mut attributes = vec![];
 
-        let mut attributes = vec![];
-
-        for entry in &self.inner.entries {
-            match PyMftAttributeX20Entry::from_x20_entry(py, entry).map(|entry| entry.to_object(py))
-            {
-                Ok(obj) => attributes.push(obj),
-                Err(e) => attributes.push(e.to_object(py)),
+            for entry in &self.inner.entries {
+                match PyMftAttributeX20Entry::from_x20_entry(py, entry)
+                    .map(|entry| entry.to_object(py))
+                {
+                    Ok(obj) => attributes.push(obj),
+                    Err(e) => attributes.push(e.to_object(py)),
+                }
             }
-        }
 
-        Py::new(
-            py,
-            PyMftX20EntriesIter {
-                inner: Box::new(attributes.into_iter()),
-            },
-        )
+            Py::new(
+                py,
+                PyMftX20EntriesIter {
+                    inner: Box::new(attributes.into_iter()),
+                },
+            )
+        })
     }
 }
 

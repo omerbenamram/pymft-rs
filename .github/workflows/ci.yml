@@ -1,51 +1,130 @@
-name: ci
+name: CI
 
 on:
   push:
-    branches:
-      - "*"
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+  pull_request:
 
 jobs:
-  test:
-    name: test
+  linux:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v2
+    - uses: actions/checkout@v2
+    - name: Install Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Build instrumentation wheels
+      uses: messense/maturin-action@v1
+      with:
+        manylinux: auto
+        command: build
+        args: --release -o dist
+      env:
+        RUSTFLAGS: "-Cprofile-generate=${{ github.workspace }}/pgo-data"
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        profile: minimal
+        override: true
+        target: x86_64-unknown-linux-gnu
+        components: llvm-tools-preview
+
+    - name: PGO optimize
+      run: |
+        PATH=$HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/:$PATH
+        pip install --no-index --find-links ./dist mft
+        echo "Running instrumented binary"
+        sudo mkdir -p $PWD/pgo-data
+        sudo chmod -R 777 $PWD/pgo-data
+        for i in $(find $PWD/samples -name "MFT"); do
+            echo "Processing $i"
+            python scripts/mft_dump.py $i 1>/dev/null
+        done
+        echo "Merging profile data"
+        llvm-profdata merge -o $PWD/pgo-data/merged.profdata $PWD/pgo-data
+    - uses: messense/maturin-action@v1
+      with:
+        manylinux: auto
+        command: build
+        args: --release -o dist
+      env:
+        RUSTFLAGS: "-Cprofile-use=${{ github.workspace }}/pgo-data/merged.profdata"
+    - name: Upload wheels
+      uses: actions/upload-artifact@v2
+      with:
+        name: wheels
+        path: dist
+    - run: pip install -U pytest
+    - run: pip install --no-index --find-links ./dist evtx
+    - run: pytest
+
+  windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v2
+    - uses: messense/maturin-action@v1
+      with:
+        command: build
+        args: --release -o dist
+    - name: Upload wheels
+      uses: actions/upload-artifact@v2
+      with:
+        name: wheels
+        path: dist
+    - run: pip install -U pytest
+    - run: pip install --no-index --find-links ./dist evtx
+    - run: pytest
+
+  macos:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v2
+    - uses: messense/maturin-action@v1
+      with:
+        command: build
+        args: --release -o dist --universal2
+    - name: Upload wheels
+      uses: actions/upload-artifact@v2
+      with:
+        name: wheels
+        path: dist
+    - run: pip install -U pytest
+    - run: pip install --no-index --find-links ./dist evtx
+    - run: pytest
+
+  macos-m1:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v2
+    - uses: messense/maturin-action@v1
+      with:
+        command: build
+        target: aarch64-apple-darwin
+        args: --release -o dist --zig
+    - name: Upload wheels
+      uses: actions/upload-artifact@v2
+      with:
+        name: wheels
+        path: dist
+
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    if: "startsWith(github.ref, 'refs/tags/')"
+    needs: [ macos, windows, linux, macos-m1 ]
+    steps:
+      - uses: actions/download-artifact@v2
         with:
-          fetch-depth: 1
-
-      - uses: actions/setup-python@v2
+          name: wheels
+      - name: Publish to PyPI
+        uses: messense/maturin-action@v1
+        env:
+          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         with:
-          python-version: "3.8"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install -U pip
-          pip install -U setuptools wheel pytest
-
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ matrix.rust }}
-          profile: minimal
-          override: true
-          target: ${{ matrix.target }}
-
-      - name: Fetch maturin release
-        run: |
-          curl -L https://github.com/PyO3/maturin/releases/download/v0.11.0/maturin-x86_64-unknown-linux-musl.tar.gz | tar -xz
-          chmod +x ./maturin
-
-      - name: Build example wheel
-        run: |
-          mkdir wheels
-          ./maturin build -o ./wheels
-
-      - name: Install wheel
-        run: |
-          pip install ./wheels/*.whl
-
-      - name: Test
-        run: |
-          pytest
+          command: upload
+          args: --skip-existing *

@@ -7,16 +7,16 @@ mod utils;
 
 pub(crate) mod err;
 pub use entry::PyMftEntry;
-
-use mft::{MftEntry, MftParser};
+use mft_rs::csv::FlatMftEntryWithName;
+use mft_rs::entry::ZERO_HEADER;
+use mft_rs::{MftEntry, MftParser};
 
 use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 
-use pyo3::prelude::*;
-use pyo3::PyIterProtocol;
 use pyo3::exceptions;
+use pyo3::prelude::*;
 
 use crate::attribute::{
     PyMftAttribute, PyMftAttributeOther, PyMftAttributeX10, PyMftAttributeX20, PyMftAttributeX30,
@@ -26,8 +26,6 @@ use crate::entry::PyMftAttributesIter;
 use crate::err::PyMftError;
 use crate::utils::{init_logging, FileOrFileLike};
 use csv::WriterBuilder;
-use mft::csv::FlatMftEntryWithName;
-use mft::entry::ZERO_HEADER;
 use pyo3::types::{PyBytes, PyString};
 
 pub trait ReadSeek: Read + Seek {
@@ -115,6 +113,13 @@ impl PyMftParser {
     fn entries_csv(&mut self) -> PyResult<Py<PyMftEntriesIterator>> {
         self.records_iterator(Output::CSV)
     }
+
+    fn __iter__(mut slf: PyRefMut<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
+        slf.entries()
+    }
+    fn __next__(_slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
+        Err(PyErr::new::<exceptions::PyNotImplementedError, _>("Using `next()` over `PyMftParser` is not supported. Try iterating over `PyMftParser(...).entries()`"))
+    }
 }
 
 impl PyMftParser {
@@ -155,6 +160,16 @@ pub struct PyMftEntriesIterator {
     csv_header_written: bool,
 }
 
+#[pymethods]
+impl PyMftEntriesIterator {
+    fn __iter__(slf: PyRefMut<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
+        Ok(slf.into())
+    }
+    fn __next__(mut slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
+        slf.next()
+    }
+}
+
 impl PyMftEntriesIterator {
     fn entry_to_pyobject(
         &mut self,
@@ -185,7 +200,8 @@ impl PyMftEntriesIterator {
         match entry_result {
             Ok(entry) => match serde_json::to_string(&entry) {
                 Ok(s) => PyString::new(py, &s).to_object(py),
-                Err(_e) => PyErr::new::<exceptions::PyRuntimeError, _>("JSON Serialization failed").to_object(py),
+                Err(_e) => PyErr::new::<exceptions::PyRuntimeError, _>("JSON Serialization failed")
+                    .to_object(py),
             },
             Err(e) => PyErr::from(e).to_object(py),
         }
@@ -205,14 +221,18 @@ impl PyMftEntriesIterator {
                 match writer.serialize(FlatMftEntryWithName::from_entry(&entry, &mut self.inner)) {
                     Ok(()) => {}
                     Err(_e) => {
-                        return PyErr::new::<exceptions::PyRuntimeError, _>("CSV Serialization failed")
-                            .to_object(py)
+                        return PyErr::new::<exceptions::PyRuntimeError, _>(
+                            "CSV Serialization failed",
+                        )
+                        .to_object(py)
                     }
                 }
 
                 match writer.into_inner() {
                     Ok(bytes) => PyBytes::new(py, &bytes).to_object(py),
-                    Err(e) => PyErr::new::<exceptions::PyRuntimeError, _>(e.to_string()).to_object(py),
+                    Err(e) => {
+                        PyErr::new::<exceptions::PyRuntimeError, _>(e.to_string()).to_object(py)
+                    }
                 }
             }
             Err(e) => PyErr::from(e).to_object(py),
@@ -249,26 +269,6 @@ impl PyMftEntriesIterator {
             self.current_record += 1;
             return obj;
         }
-    }
-}
-
-#[pyproto]
-impl PyIterProtocol for PyMftParser {
-    fn __iter__(mut slf: PyRefMut<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
-        slf.entries()
-    }
-    fn __next__(_slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
-        Err(PyErr::new::<exceptions::PyNotImplementedError, _>("Using `next()` over `PyMftParser` is not supported. Try iterating over `PyMftParser(...).entries()`"))
-    }
-}
-
-#[pyproto]
-impl PyIterProtocol for PyMftEntriesIterator {
-    fn __iter__(slf: PyRefMut<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
-        Ok(slf.into())
-    }
-    fn __next__(mut slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
-        slf.next()
     }
 }
 

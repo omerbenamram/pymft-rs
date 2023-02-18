@@ -2,7 +2,7 @@ use log::{Level, Log, Metadata, Record, SetLoggerError};
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use log::warn;
-use pyo3::types::{PyDateTime, PyString};
+use pyo3::types::{PyDateTime, PyString, PyTzInfo};
 use pyo3::ToPyObject;
 use pyo3::{PyObject, PyResult, Python};
 use pyo3_file::PyFileLikeObject;
@@ -15,21 +15,20 @@ pub enum FileOrFileLike {
 
 impl FileOrFileLike {
     pub fn from_pyobject(path_or_file_like: PyObject) -> PyResult<FileOrFileLike> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
+        Python::with_gil(|py| {
+            // is a path
+            if let Ok(string_ref) = path_or_file_like.downcast::<PyString>(py) {
+                return Ok(FileOrFileLike::File(
+                    string_ref.to_string_lossy().to_string(),
+                ));
+            }
 
-        // is a path
-        if let Ok(string_ref) = path_or_file_like.cast_as::<PyString>(py) {
-            return Ok(FileOrFileLike::File(
-                string_ref.to_string_lossy().to_string(),
-            ));
-        }
-
-        // We only need read + seek
-        match PyFileLikeObject::with_requirements(path_or_file_like, true, false, true) {
-            Ok(f) => Ok(FileOrFileLike::FileLike(f)),
-            Err(e) => Err(e),
-        }
+            // We only need read + seek
+            match PyFileLikeObject::with_requirements(path_or_file_like, true, false, true) {
+                Ok(f) => Ok(FileOrFileLike::FileLike(f)),
+                Err(e) => Err(e),
+            }
+        })
     }
 }
 
@@ -86,28 +85,29 @@ pub fn init_logging(py: Python) -> Result<(), SetLoggerError> {
 }
 
 pub fn date_to_pyobject(date: &DateTime<Utc>) -> PyResult<PyObject> {
-    let gil = Python::acquire_gil();
-    let py = gil.python();
+    Python::with_gil(|py| {
+        let utc = get_utc().ok();
 
-    let utc = get_utc().ok();
+        if utc.is_none() {
+            warn!("UTC module not found, falling back to naive timezone objects")
+        }
 
-    if utc.is_none() {
-        warn!("UTC module not found, falling back to naive timezone objects")
-    }
+        let tz = utc.as_ref().map(|tz| tz.downcast::<PyTzInfo>(py).unwrap());
 
-    PyDateTime::new(
-        py,
-        date.year(),
-        date.month() as u8,
-        date.day() as u8,
-        date.hour() as u8,
-        date.minute() as u8,
-        date.second() as u8,
-        date.timestamp_subsec_micros(),
-        // Fallback to naive timestamps (None) if for some reason `datetime.timezone.utc` is not present.
-        utc.as_ref(),
-    )
-    .map(|dt| dt.to_object(py))
+        PyDateTime::new(
+            py,
+            date.year(),
+            date.month() as u8,
+            date.day() as u8,
+            date.hour() as u8,
+            date.minute() as u8,
+            date.second() as u8,
+            date.timestamp_subsec_micros(),
+            // Fallback to naive timestamps (None) if for some reason `datetime.timezone.utc` is not present.
+            tz,
+        )
+        .map(|dt| dt.to_object(py))
+    })
 }
 
 pub fn get_utc() -> PyResult<PyObject> {

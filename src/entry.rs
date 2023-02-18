@@ -3,10 +3,10 @@ use pyo3::prelude::*;
 
 use crate::attribute::PyMftAttribute;
 use crate::err::PyMftError;
-use mft::{MftEntry, MftParser};
-use mft::attribute::MftAttributeType;
-use mft::attribute::header::ResidentialHeader;
-use pyo3::{Py, PyIterProtocol, PyResult, Python};
+use mft_rs::attribute::header::ResidentialHeader;
+use mft_rs::attribute::MftAttributeType;
+use mft_rs::{MftEntry, MftParser};
+use pyo3::{Py, PyResult, Python};
 use std::path::PathBuf;
 
 #[pyclass]
@@ -78,15 +78,11 @@ impl PyMftEntry {
             .to_string();
 
         let file_size = entry
-            .iter_attributes_matching(Some(vec![
-                MftAttributeType::DATA,
-            ]))
+            .iter_attributes_matching(Some(vec![MftAttributeType::DATA]))
             .find_map(Result::ok)
-            .map_or(0, |attr| {
-                match &attr.header.residential_header {
-                    ResidentialHeader::Resident(r) => u64::from(r.data_size),
-                    ResidentialHeader::NonResident(nr) => nr.file_size,
-                }
+            .map_or(0, |attr| match &attr.header.residential_header {
+                ResidentialHeader::Resident(r) => u64::from(r.data_size),
+                ResidentialHeader::NonResident(nr) => nr.file_size,
             });
 
         Py::new(
@@ -113,8 +109,8 @@ pub struct PyMftAttributesIter {
     inner: Box<dyn Iterator<Item = PyObject> + Send>,
 }
 
-#[pyproto]
-impl PyIterProtocol for PyMftAttributesIter {
+#[pymethods]
+impl PyMftAttributesIter {
     fn __iter__(slf: PyRefMut<Self>) -> PyResult<Py<PyMftAttributesIter>> {
         Ok(slf.into())
     }

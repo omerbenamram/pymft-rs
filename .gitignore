@@ -1,3 +1,5 @@
+.mypy_cache
+.venv
 /target
 **/*.rs.bk
 
