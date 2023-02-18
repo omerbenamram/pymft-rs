@@ -13,7 +13,7 @@ use mft_rs::{MftEntry, MftParser};
 
 use std::fs::File;
 use std::io;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek};
 
 use pyo3::exceptions;
 use pyo3::prelude::*;
@@ -30,7 +30,7 @@ use pyo3::types::{PyBytes, PyString};
 
 pub trait ReadSeek: Read + Seek {
     fn tell(&mut self) -> io::Result<u64> {
-        self.seek(SeekFrom::Current(0))
+        self.stream_position()
     }
 }
 
@@ -124,30 +124,29 @@ impl PyMftParser {
 
 impl PyMftParser {
     fn records_iterator(&mut self, output_format: Output) -> PyResult<Py<PyMftEntriesIterator>> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
+        Python::with_gil(|py| {
+            let inner = match self.inner.take() {
+                Some(inner) => inner,
+                None => {
+                    return Err(PyErr::new::<exceptions::PyRuntimeError, _>(
+                        "PyMftParser can only be used once",
+                    ));
+                }
+            };
 
-        let inner = match self.inner.take() {
-            Some(inner) => inner,
-            None => {
-                return Err(PyErr::new::<exceptions::PyRuntimeError, _>(
-                    "PyMftParser can only be used once",
-                ));
-            }
-        };
+            let n_records = inner.get_entry_count();
 
-        let n_records = inner.get_entry_count();
-
-        Py::new(
-            py,
-            PyMftEntriesIterator {
-                inner,
-                total_number_of_records: n_records,
-                current_record: 0,
-                output_format,
-                csv_header_written: false,
-            },
-        )
+            Py::new(
+                py,
+                PyMftEntriesIterator {
+                    inner,
+                    total_number_of_records: n_records,
+                    current_record: 0,
+                    output_format,
+                    csv_header_written: false,
+                },
+            )
+        })
     }
 }
 
@@ -240,10 +239,7 @@ impl PyMftEntriesIterator {
     }
 
     fn next(&mut self) -> PyResult<Option<PyObject>> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
-
-        loop {
+        Python::with_gil(|py| loop {
             if self.current_record == self.total_number_of_records {
                 return Ok(None);
             }
@@ -268,7 +264,7 @@ impl PyMftEntriesIterator {
 
             self.current_record += 1;
             return obj;
-        }
+        })
     }
 }
 

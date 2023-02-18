@@ -288,10 +288,12 @@ impl PyMftAttributeX30 {
     pub fn created(&self) -> PyResult<PyObject> {
         date_to_pyobject(&self.inner.created)
     }
+
     #[getter]
     pub fn modified(&self) -> PyResult<PyObject> {
         date_to_pyobject(&self.inner.modified)
     }
+
     #[getter]
     pub fn mft_modified(&self) -> PyResult<PyObject> {
         date_to_pyobject(&self.inner.mft_modified)

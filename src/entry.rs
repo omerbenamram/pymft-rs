@@ -38,29 +38,28 @@ pub struct PyMftEntry {
 #[pymethods]
 impl PyMftEntry {
     pub fn attributes(&self) -> PyResult<Py<PyMftAttributesIter>> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
+        Python::with_gil(|py| {
+            let mut attributes = vec![];
 
-        let mut attributes = vec![];
-
-        for attribute_result in self.inner.iter_attributes() {
-            match attribute_result {
-                Ok(attribute) => match PyMftAttribute::from_mft_attribute(py, attribute)
-                    .map(|entry| entry.to_object(py))
-                {
-                    Ok(obj) => attributes.push(obj),
-                    Err(e) => attributes.push(e.to_object(py)),
-                },
-                Err(e) => attributes.push(PyErr::from(PyMftError(e)).to_object(py)),
+            for attribute_result in self.inner.iter_attributes() {
+                match attribute_result {
+                    Ok(attribute) => match PyMftAttribute::from_mft_attribute(py, attribute)
+                        .map(|entry| entry.to_object(py))
+                    {
+                        Ok(obj) => attributes.push(obj),
+                        Err(e) => attributes.push(e.to_object(py)),
+                    },
+                    Err(e) => attributes.push(PyErr::from(PyMftError(e)).to_object(py)),
+                }
             }
-        }
 
-        Py::new(
-            py,
-            PyMftAttributesIter {
-                inner: Box::new(attributes.into_iter()),
-            },
-        )
+            Py::new(
+                py,
+                PyMftAttributesIter {
+                    inner: Box::new(attributes.into_iter()),
+                },
+            )
+        })
     }
 }
 

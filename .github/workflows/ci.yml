@@ -10,7 +10,8 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
+
     - name: Install Python
       uses: actions/setup-python@v4
       with:
@@ -21,7 +22,7 @@ jobs:
       with:
         manylinux: auto
         command: build
-        args: --release -o dist
+        args: --release -i python3.10 -o dist
       env:
         RUSTFLAGS: "-Cprofile-generate=${{ github.workspace }}/pgo-data"
 
@@ -47,65 +48,98 @@ jobs:
         done
         echo "Merging profile data"
         llvm-profdata merge -o $PWD/pgo-data/merged.profdata $PWD/pgo-data
-    - uses: messense/maturin-action@v1
+
+    - name: Build native wheels
+      uses: messense/maturin-action@v1
       with:
         manylinux: auto
         command: build
-        args: --release -o dist
+        args: -i python3.7 python3.8 python3.9 python3.10 python3.11 --release -o dist
       env:
         RUSTFLAGS: "-Cprofile-use=${{ github.workspace }}/pgo-data/merged.profdata"
+
+    - name: build abi3 wheel
+      uses: messense/maturin-action@v1
+      with:
+        manylinux: auto
+        command: build
+        args: --features=abi3 --release -o dist
+      env:
+        RUSTFLAGS: "-Cprofile-use=${{ github.workspace }}/pgo-data/merged.profdata"
+
     - name: Upload wheels
       uses: actions/upload-artifact@v2
       with:
         name: wheels
         path: dist
     - run: pip install -U pytest
-    - run: pip install --no-index --find-links ./dist evtx
+    - run: pip install --no-index --find-links ./dist mft
     - run: pytest
 
   windows:
     runs-on: windows-latest
     steps:
     - uses: actions/checkout@v2
-    - uses: messense/maturin-action@v1
+    - name: Build native wheels
+      uses: messense/maturin-action@v1
       with:
         command: build
         args: --release -o dist
+    - name: Build abi3 wheel
+      uses: messense/maturin-action@v1
+      with:
+        manylinux: auto
+        command: build
+        args: --features=abi3 --release -o dist
     - name: Upload wheels
       uses: actions/upload-artifact@v2
       with:
         name: wheels
         path: dist
     - run: pip install -U pytest
-    - run: pip install --no-index --find-links ./dist evtx
+    - run: pip install --no-index --find-links ./dist mft
     - run: pytest
 
   macos:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v2
-    - uses: messense/maturin-action@v1
+    - name: Build native wheels
+      uses: messense/maturin-action@v1
       with:
         command: build
         args: --release -o dist --universal2
+    - name: Build abi3 wheel
+      uses: messense/maturin-action@v1
+      with:
+        manylinux: auto
+        command: build
+        args: --features=abi3 --release -o dist
     - name: Upload wheels
       uses: actions/upload-artifact@v2
       with:
         name: wheels
         path: dist
     - run: pip install -U pytest
-    - run: pip install --no-index --find-links ./dist evtx
+    - run: pip install --no-index --find-links ./dist mft
     - run: pytest
 
   macos-m1:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v2
-    - uses: messense/maturin-action@v1
+    - name: Build native wheels
+      uses: messense/maturin-action@v1
       with:
         command: build
         target: aarch64-apple-darwin
         args: --release -o dist --zig
+    - name: Build abi3 wheel
+      uses: messense/maturin-action@v1
+      with:
+        manylinux: auto
+        command: build
+        args: --features=abi3 --release -o dist
     - name: Upload wheels
       uses: actions/upload-artifact@v2
       with:
