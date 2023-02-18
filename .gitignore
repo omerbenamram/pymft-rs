@@ -10,3 +10,5 @@
 *.pyd
 .pytest_cache
 .history
+dist/
+out/

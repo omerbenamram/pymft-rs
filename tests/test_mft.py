@@ -8,14 +8,14 @@ from mft import PyMftParser, PyMftEntry
 
 
 @pytest.fixture
-def sample_mft() -> str:
+def sample_mft() -> Path:
     p = Path(__file__).parent.parent / "samples" / "MFT"
     assert p.exists()
 
     return p
 
 
-def test_it_works(sample_mft):
+def test_it_works(sample_mft: Path):
     with open(sample_mft, "rb") as m:
         parser = PyMftParser(m)
 
@@ -25,7 +25,7 @@ def test_it_works(sample_mft):
         assert sample_record.full_path == "$MFT"
 
 
-def test_iter_attributes(sample_mft):
+def test_iter_attributes(sample_mft: Path):
     with open(sample_mft, "rb") as m:
         parser = PyMftParser(m)
 
@@ -35,7 +35,7 @@ def test_iter_attributes(sample_mft):
         assert len(l) == 4
 
 
-def test_datetimes_are_converted_properly(sample_mft):
+def test_datetimes_are_converted_properly(sample_mft: Path):
     with open(sample_mft, "rb") as m:
         parser = PyMftParser(m)
 
@@ -48,9 +48,9 @@ def test_datetimes_are_converted_properly(sample_mft):
         assert content.created.tzinfo == datetime.timezone.utc
 
 
-def test_doesnt_yield_zeroed_entries(sample_mft):
+def test_doesnt_yield_zeroed_entries(sample_mft: Path):
     parser = PyMftParser(str(sample_mft))
-        
+
     for entry in parser.entries():
         try:
             for attribute in entry.attributes():

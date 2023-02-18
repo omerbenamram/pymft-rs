@@ -1,7 +1,6 @@
 use log::{Level, Log, Metadata, Record, SetLoggerError};
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
-use log::warn;
 use pyo3::types::PyString;
 
 #[cfg(not(feature = "abi3"))]
@@ -93,7 +92,7 @@ pub fn date_to_pyobject(date: &DateTime<Utc>) -> PyResult<PyObject> {
         let utc = get_utc().ok();
 
         if utc.is_none() {
-            warn!("UTC module not found, falling back to naive timezone objects")
+            log::warn!("UTC module not found, falling back to naive timezone objects")
         }
 
         let tz = utc.as_ref().map(|tz| tz.downcast::<PyTzInfo>(py).unwrap());
