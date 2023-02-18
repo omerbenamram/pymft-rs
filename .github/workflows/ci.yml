@@ -139,7 +139,8 @@ jobs:
       with:
         manylinux: auto
         command: build
-        args: --features=abi3 --release -o dist
+        target: aarch64-apple-darwin
+        args: --features=abi3 --release -o dist --zig
     - name: Upload wheels
       uses: actions/upload-artifact@v2
       with:
