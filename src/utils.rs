@@ -47,19 +47,18 @@ impl Log for PyLogger {
         if self.enabled(record.metadata()) {
             if let Level::Warn = self.level {
                 let level_string = record.level().to_string();
-                let gil = Python::acquire_gil();
-                let py = gil.python();
+                Python::with_gil(|py| {
+                    let message = format!(
+                        "{:<5} [{}] {}",
+                        level_string,
+                        record.module_path().unwrap_or_default(),
+                        record.args()
+                    );
 
-                let message = format!(
-                    "{:<5} [{}] {}",
-                    level_string,
-                    record.module_path().unwrap_or_default(),
-                    record.args()
-                );
-
-                self.warnings_module
-                    .call_method(py, "warn", (message,), None)
-                    .ok();
+                    self.warnings_module
+                        .call_method(py, "warn", (message,), None)
+                        .ok();
+                })
             }
         }
     }
@@ -111,12 +110,11 @@ pub fn date_to_pyobject(date: &DateTime<Utc>) -> PyResult<PyObject> {
 }
 
 pub fn get_utc() -> PyResult<PyObject> {
-    let gil = Python::acquire_gil();
-    let py = gil.python();
+    Python::with_gil(|py| {
+        let datetime = py.import("datetime")?;
+        let tz: PyObject = datetime.getattr("timezone")?.into();
+        let utc = tz.getattr(py, "utc")?;
 
-    let datetime = py.import("datetime")?;
-    let tz: PyObject = datetime.getattr("timezone")?.into();
-    let utc = tz.getattr(py, "utc")?;
-
-    Ok(utc)
+        Ok(utc)
+    })
 }
