@@ -7,6 +7,9 @@ edition = "2018"
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+abi3 = ["pyo3/abi3-py37"]
+
 [dependencies]
 mft_rs = { version = "0.6.1", no-default-features = true, package = "mft" }
 pyo3 = { version = "0.18.1", features = ["extension-module"] }

@@ -52,6 +52,11 @@ jobs:
         manylinux: auto
         command: build
         args: --release -o dist
+    - uses: messense/maturin-action@v1
+      with:
+        manylinux: auto
+        command: build
+        args: --features=abi3 --release -o dist
       env:
         RUSTFLAGS: "-Cprofile-use=${{ github.workspace }}/pgo-data/merged.profdata"
     - name: Upload wheels
@@ -67,10 +72,17 @@ jobs:
     runs-on: windows-latest
     steps:
     - uses: actions/checkout@v2
-    - uses: messense/maturin-action@v1
+    - name: Build native wheels
+      uses: messense/maturin-action@v1
       with:
         command: build
         args: --release -o dist
+    - name: Build abi3 wheel
+      uses: messense/maturin-action@v1
+      with:
+        manylinux: auto
+        command: build
+        args: --features=abi3 --release -o dist
     - name: Upload wheels
       uses: actions/upload-artifact@v2
       with:
@@ -84,10 +96,17 @@ jobs:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v2
-    - uses: messense/maturin-action@v1
+    - name: Build native wheels
+      uses: messense/maturin-action@v1
       with:
         command: build
         args: --release -o dist --universal2
+    - name: Build abi3 wheel
+      uses: messense/maturin-action@v1
+      with:
+        manylinux: auto
+        command: build
+        args: --features=abi3 --release -o dist
     - name: Upload wheels
       uses: actions/upload-artifact@v2
       with:
@@ -101,11 +120,18 @@ jobs:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v2
-    - uses: messense/maturin-action@v1
+    - name: Build native wheels
+      uses: messense/maturin-action@v1
       with:
         command: build
         target: aarch64-apple-darwin
         args: --release -o dist --zig
+    - name: Build abi3 wheel
+      uses: messense/maturin-action@v1
+      with:
+        manylinux: auto
+        command: build
+        args: --features=abi3 --release -o dist
     - name: Upload wheels
       uses: actions/upload-artifact@v2
       with:
