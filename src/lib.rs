@@ -2,6 +2,9 @@
 #![cfg_attr(not(debug_assertions), deny(clippy::dbg_macro))]
 
 mod attribute;
+mod x20_attribute;
+mod x90_attribute;
+mod non_resident_attribute;
 mod entry;
 mod utils;
 
@@ -19,9 +22,12 @@ use pyo3::exceptions;
 use pyo3::prelude::*;
 
 use crate::attribute::{
-    PyMftAttribute, PyMftAttributeOther, PyMftAttributeX10, PyMftAttributeX20, PyMftAttributeX30,
-    PyMftAttributeX40, PyMftAttributeX80, PyMftAttributeX90,
+    PyMftAttribute, PyMftAttributeOther, PyMftAttributeX10, PyMftAttributeX30,
+    PyMftAttributeX40, PyMftAttributeX80
 };
+use crate::non_resident_attribute::PyMftAttributeNonResident;
+use crate::x20_attribute::PyMftAttributeX20;
+use crate::x90_attribute::PyMftAttributeX90;
 use crate::entry::PyMftAttributesIter;
 use crate::err::PyMftError;
 use crate::utils::{init_logging, FileOrFileLike};
@@ -289,6 +295,7 @@ fn mft(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyMftAttributeX40>()?;
     m.add_class::<PyMftAttributeX80>()?;
     m.add_class::<PyMftAttributeX90>()?;
+    m.add_class::<PyMftAttributeNonResident>()?;
     m.add_class::<PyMftAttributeOther>()?;
 
     Ok(())
