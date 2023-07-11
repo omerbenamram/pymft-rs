@@ -9,10 +9,11 @@ crate-type = ["cdylib"]
 
 [features]
 abi3 = ["pyo3/abi3-py37"]
+default = ["pyo3/extension-module"]
 
 [dependencies]
 mft_rs = { version = "0.6.1", no-default-features = true, package = "mft" }
-pyo3 = { version = "0.18.1", features = ["extension-module"] }
+pyo3 = { version = "0.18.1", features = ["auto-initialize"] }
 num-traits = "^0.2"
 log = "^0.4"
 chrono = "^0.4"
@@ -21,5 +22,3 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "^1"
 csv = "^1"
 
-[patch.crates-io]
-mft_rs = { git = "file:///home/juckelman/projects/mft", branch = "xattrs", package = "mft" }
