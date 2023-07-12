@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 #[pyclass]
 pub struct PyMftEntry {
-    // We need to keep inner entry to access it's attributes.
+    // We need to keep inner entry to access its attributes.
     inner: MftEntry,
     #[pyo3(get)]
     pub entry_id: u64,
@@ -30,9 +30,9 @@ pub struct PyMftEntry {
     #[pyo3(get)]
     pub total_entry_size: u32,
     #[pyo3(get)]
-    pub full_path: String,
+    pub full_path: String, // generated using parent entries
     #[pyo3(get)]
-    pub file_size: u64,
+    pub file_size: u64,    // generated from Data Attribute
 }
 
 #[pymethods]
