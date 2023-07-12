@@ -1,7 +1,6 @@
 use log::{Level, Log, Metadata, Record, SetLoggerError};
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
-use pyo3::types::PyString;
 
 #[cfg(not(feature = "abi3"))]
 use pyo3::types::{PyDateTime, PyTzInfo};
@@ -20,10 +19,8 @@ impl FileOrFileLike {
     pub fn from_pyobject(path_or_file_like: PyObject) -> PyResult<FileOrFileLike> {
         Python::with_gil(|py| {
             // is a path
-            if let Ok(string_ref) = path_or_file_like.downcast::<PyString>(py) {
-                return Ok(FileOrFileLike::File(
-                    string_ref.to_string_lossy().to_string(),
-                ));
+            if let Ok(string_ref) = path_or_file_like.extract(py) {
+                return Ok(FileOrFileLike::File(string_ref));
             }
 
             // We only need read + seek
