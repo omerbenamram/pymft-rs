@@ -47,14 +47,15 @@ impl Log for PyLogger {
         if self.enabled(record.metadata()) {
             if let Level::Warn = self.level {
                 let level_string = record.level().to_string();
-                Python::with_gil(|py| {
-                    let message = format!(
-                        "{:<5} [{}] {}",
-                        level_string,
-                        record.module_path().unwrap_or_default(),
-                        record.args()
-                    );
 
+                let message = format!(
+                    "{:<5} [{}] {}",
+                    level_string,
+                    record.module_path().unwrap_or_default(),
+                    record.args()
+                );
+
+                Python::with_gil(|py| {
                     self.warnings_module
                         .call_method(py, "warn", (message,), None)
                         .ok();
