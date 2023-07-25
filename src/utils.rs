@@ -1,6 +1,6 @@
 use log::{Level, Log, Metadata, Record, SetLoggerError};
 
-use chrono::{DateTime, Datelike, Timelike, Utc};
+use chrono::{DateTime, Datelike, Timelike, NaiveDateTime, Utc};
 use pyo3::types::PyString;
 
 #[cfg(not(feature = "abi3"))]
@@ -9,6 +9,8 @@ use pyo3::types::{PyDateTime, PyTzInfo};
 use pyo3::ToPyObject;
 use pyo3::{PyObject, PyResult, Python};
 use pyo3_file::PyFileLikeObject;
+
+use std::cmp::Ordering;
 
 #[derive(Debug)]
 pub enum FileOrFileLike {
@@ -86,8 +88,39 @@ pub fn init_logging(py: Python) -> Result<(), SetLoggerError> {
     Ok(())
 }
 
+fn nanos_to_micros_round_half_even(nanos: u32) -> u32 {
+    let nanos_e7 = (nanos % 1_000) / 100;
+    let nanos_e6 = (nanos % 10_000) / 1000;
+    let mut micros = (nanos / 10_000) * 10;
+    match nanos_e7.cmp(&5) {
+        Ordering::Greater => micros += nanos_e6 + 1,
+        Ordering::Less => micros += nanos_e6,
+        Ordering::Equal => micros += nanos_e6 + (nanos_e6 % 2),
+    }
+    micros
+}
+
+fn date_splitter(date: &DateTime<Utc>) -> PyResult<(i64, u32)> {
+    let mut unix_time = date.timestamp();
+    let mut micros = nanos_to_micros_round_half_even(date.timestamp_subsec_nanos());
+
+    let inc_sec = micros / 1_000_000;
+    micros %= 1_000_000;
+    unix_time += inc_sec as i64;
+
+    Ok((unix_time, micros))
+}
+
 #[cfg(not(feature = "abi3"))]
 pub fn date_to_pyobject(date: &DateTime<Utc>) -> PyResult<PyObject> {
+    // datetime has microsecond precision, so half-even round nanoseconds
+    let (unix_time, micros) = date_splitter(date)?;
+    let rounded_date = DateTime::<Utc>::from_utc(
+        NaiveDateTime::from_timestamp_opt(unix_time, micros * 1_000)
+            .expect("these values came from a DateTime, creating a new one from them cannot fail"),
+        Utc
+    );
+
     Python::with_gil(|py| {
         let utc = get_utc().ok();
 
@@ -99,13 +132,13 @@ pub fn date_to_pyobject(date: &DateTime<Utc>) -> PyResult<PyObject> {
 
         PyDateTime::new(
             py,
-            date.year(),
-            date.month() as u8,
-            date.day() as u8,
-            date.hour() as u8,
-            date.minute() as u8,
-            date.second() as u8,
-            date.timestamp_subsec_micros(),
+            rounded_date.year(),
+            rounded_date.month() as u8,
+            rounded_date.day() as u8,
+            rounded_date.hour() as u8,
+            rounded_date.minute() as u8,
+            rounded_date.second() as u8,
+            rounded_date.timestamp_subsec_micros(),
             // Fallback to naive timestamps (None) if for some reason `datetime.timezone.utc` is not present.
             tz,
         )
@@ -115,6 +148,13 @@ pub fn date_to_pyobject(date: &DateTime<Utc>) -> PyResult<PyObject> {
 
 #[cfg(feature = "abi3")]
 pub fn date_to_pyobject(date: &DateTime<Utc>) -> PyResult<PyObject> {
+    // datetime has microsecond precision, so half-even round nanoseconds
+    let (unix_time, micros) = date_splitter(date)?;
+    let rounded_date = DateTime::<Utc>::from_utc(
+        NaiveDateTime::from_timestamp(unix_time, micros * 1_000),
+        Utc
+    );
+
     // Create a UTC string in the format of `YYYY-MM-DDTHH:MM:SS.ssssssZ`
     // This is the format that the `datetime` module expects.
     // See: https://docs.python.org/3/library/datetime.html#datetime.datetime.strptime
@@ -123,13 +163,13 @@ pub fn date_to_pyobject(date: &DateTime<Utc>) -> PyResult<PyObject> {
     use pyo3::types::PyDict;
     let utc_string = format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}Z",
-        date.year(),
-        date.month(),
-        date.day(),
-        date.hour(),
-        date.minute(),
-        date.second(),
-        date.timestamp_subsec_micros()
+        rounded_date.year(),
+        rounded_date.month(),
+        rounded_date.day(),
+        rounded_date.hour(),
+        rounded_date.minute(),
+        rounded_date.second(),
+        rounded_date.timestamp_subsec_micros()
     );
 
     Python::with_gil(|py| {
@@ -152,6 +192,8 @@ pub fn date_to_pyobject(date: &DateTime<Utc>) -> PyResult<PyObject> {
 }
 
 pub fn get_utc() -> PyResult<PyObject> {
+    // Replace this function with pyo3::types::timezone_utc when
+    // Python < 3.2 is no longer supported.
     Python::with_gil(|py| {
         let datetime = py.import("datetime")?;
         let tz: PyObject = datetime.getattr("timezone")?.into();
@@ -159,4 +201,62 @@ pub fn get_utc() -> PyResult<PyObject> {
 
         Ok(utc)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use pyo3::types::{PyDateAccess, PyTimeAccess};
+
+    use super::*;
+
+    #[test]
+    fn test_nanos_to_micros_round_half_even() {
+        assert_eq!(nanos_to_micros_round_half_even(764_026_300), 764_026);
+        assert_eq!(nanos_to_micros_round_half_even(764_026_600), 764_027);
+        assert_eq!(nanos_to_micros_round_half_even(764_026_500), 764_026);
+        assert_eq!(nanos_to_micros_round_half_even(764_027_500), 764_028);
+        assert_eq!(nanos_to_micros_round_half_even(999_999_500), 1_000_000);
+    }
+
+    #[test]
+    fn test_date_splitter(){
+        let tests = [
+            ("2020-09-29T17:38:04.9999995Z", (1601401085, 0u32)),
+            ("2020-09-29T17:38:04.0000004Z", (1601401084, 0u32)),
+            ("2020-09-29T17:38:04.1234567Z", (1601401084, 123457u32)),
+            ("2020-12-31T23:59:59.9999995Z", (1609459200, 0u32)),
+        ];
+
+        for (test, expected) in tests {
+            let dt = DateTime::parse_from_rfc3339(test).unwrap().with_timezone(&Utc);
+            let res = date_splitter(&dt).unwrap();
+            assert_eq!(res, expected);
+        }
+    }
+
+    #[test]
+    fn test_date_to_pyobject() {
+        let tests = [
+            ("2020-09-29T17:38:04.9999995Z", (2020, 9, 29, 17, 38, 5, 0)),
+            ("2020-09-29T17:38:04.0000004Z", (2020, 9, 29, 17, 38, 4, 0)),
+            ("2020-09-29T17:38:04.1234567Z", (2020, 9, 29, 17, 38, 4, 123457)),
+            ("2020-12-31T23:59:59.9999995Z", (2021, 1, 1, 0, 0, 0, 0)),
+        ];
+        Python::with_gil(|py| {
+            for (test, (y, mo, d, h, min, s, us)) in tests {
+                let dt = DateTime::parse_from_rfc3339(test).unwrap().with_timezone(&Utc);
+
+                let po = date_to_pyobject(&dt).unwrap();
+                let pdt = po.as_ref(py).extract::<&PyDateTime>().unwrap();
+
+                assert_eq!(pdt.get_year(), y);
+                assert_eq!(pdt.get_month(), mo);
+                assert_eq!(pdt.get_day(), d);
+                assert_eq!(pdt.get_hour(), h);
+                assert_eq!(pdt.get_minute(), min);
+                assert_eq!(pdt.get_second(), s);
+                assert_eq!(pdt.get_microsecond(), us);
+            }
+        });
+    }
 }
