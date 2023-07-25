@@ -7,7 +7,6 @@ use mft_rs::attribute::header::ResidentialHeader;
 use mft_rs::attribute::MftAttributeType;
 use mft_rs::{MftEntry, MftParser};
 use pyo3::{Py, PyResult, Python};
-use std::path::PathBuf;
 
 #[pyclass]
 pub struct PyMftEntry {
@@ -72,8 +71,7 @@ impl PyMftEntry {
         let full_path = parser
             .get_full_path_for_entry(&entry)
             .expect("unreachable")
-            .unwrap_or_else(|| PathBuf::from("[UNKNOWN]"))
-            .to_string_lossy()
+            .unwrap_or_else(|| String::from("[UNKNOWN]"))
             .to_string();
 
         let file_size = entry
