@@ -32,9 +32,10 @@ jobs:
                       target: ""
                     - platform: macos
                       os: macos-latest
-                      args: --release --out dist --features abi3 --universal2
+                      # maturin v1 uses a synthetic target triple for universal2
+                      args: --release --out dist --features abi3
                       manylinux: ""
-                      target: ""
+                      target: universal2-apple-darwin
 
         steps:
             - name: Checkout
