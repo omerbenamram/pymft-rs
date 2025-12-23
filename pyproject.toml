@@ -1,10 +1,11 @@
 [build-system]
-requires = ["maturin>=0.14,<0.15"]
+requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
 name = "mft"
 requires-python = ">=3.7"
+dynamic = ["version"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -19,3 +20,4 @@ classifiers = [
 
 [project.optional-dependencies]
 test = ["pytest"]
+dev = ["maturin>=1.0,<2.0", "pytest"]

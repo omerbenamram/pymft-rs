@@ -18,12 +18,20 @@ Available on PyPi - https://pypi.org/project/mft/.
 To install from PyPi - `pip install mft`
 
 ### Wheels
-Wheels are currently automatically built for python 3.7+ for all platforms (Windows, macOS - including M1, and `manylinux`).
+Wheels are built using the `abi3` tag (so a single wheel works for all CPython versions 3.7+).
+
+Supported platforms are:
+  - Linux x86_64 (manylinux)
+  - Linux aarch64 (manylinux, cross-compiled with zig)
+  - macOS universal2 (x86_64 + arm64)
+  - Windows x86_64
 
 ### Installation from sources
-Installation is possible for other platforms by installing from sources, this requires a rust compiler and `setuptools-rust`.
+Installation is possible for other platforms by installing from sources.
 
-Run `python setup.py install`
+This requires a Rust compiler and a recent enough Pip.
+
+Run `pip install -e .`
 
 
 ## Usage

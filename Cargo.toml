@@ -1,6 +1,6 @@
 [package]
 name = "mft"
-version = "0.6.1"
+version = "0.7.0"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
 edition = "2018"
 
@@ -11,11 +11,10 @@ crate-type = ["cdylib"]
 abi3 = ["pyo3/abi3-py37"]
 
 [dependencies]
-mft_rs = { version = "0.6.1", no-default-features = true, package = "mft" }
-pyo3 = { version = "0.18.1", features = ["extension-module"] }
+mft_rs = { version = "0.7.0", default-features = false, package = "mft" }
+pyo3 = { version = "^0.26.0", features = ["extension-module"] }
 num-traits = "^0.2"
-log = "^0.4"
-chrono = "^0.4"
-pyo3-file = { git = "https://github.com/omerbenamram/pyo3-file" }
+log = { version = "^0.4", features = ["std"] }
+pyo3-file = "^0.14.0"
 serde_json = "^1"
 csv = "^1"

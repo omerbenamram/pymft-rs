@@ -1,12 +1,12 @@
 use crate::ReadSeek;
 use pyo3::prelude::*;
+use pyo3::IntoPyObjectExt;
 
 use crate::attribute::PyMftAttribute;
 use crate::err::PyMftError;
 use mft_rs::attribute::header::ResidentialHeader;
 use mft_rs::attribute::MftAttributeType;
 use mft_rs::{MftEntry, MftParser};
-use pyo3::{Py, PyResult, Python};
 use std::path::PathBuf;
 
 #[pyclass]
@@ -38,18 +38,18 @@ pub struct PyMftEntry {
 #[pymethods]
 impl PyMftEntry {
     pub fn attributes(&self) -> PyResult<Py<PyMftAttributesIter>> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mut attributes = vec![];
 
             for attribute_result in self.inner.iter_attributes() {
                 match attribute_result {
                     Ok(attribute) => match PyMftAttribute::from_mft_attribute(py, attribute)
-                        .map(|entry| entry.to_object(py))
+                        .and_then(|entry| entry.into_py_any(py))
                     {
                         Ok(obj) => attributes.push(obj),
-                        Err(e) => attributes.push(e.to_object(py)),
+                        Err(e) => attributes.push(e.into_py_any(py).unwrap()),
                     },
-                    Err(e) => attributes.push(PyErr::from(PyMftError(e)).to_object(py)),
+                    Err(e) => attributes.push(PyErr::from(PyMftError(e)).into_py_any(py).unwrap()),
                 }
             }
 
@@ -103,9 +103,9 @@ impl PyMftEntry {
     }
 }
 
-#[pyclass]
+#[pyclass(unsendable)]
 pub struct PyMftAttributesIter {
-    inner: Box<dyn Iterator<Item = PyObject> + Send>,
+    inner: Box<dyn Iterator<Item = Py<PyAny>> + Send>,
 }
 
 #[pymethods]
@@ -114,13 +114,13 @@ impl PyMftAttributesIter {
         Ok(slf.into())
     }
 
-    fn __next__(mut slf: PyRefMut<Self>) -> PyResult<Option<PyObject>> {
+    fn __next__(mut slf: PyRefMut<Self>) -> PyResult<Option<Py<PyAny>>> {
         slf.next()
     }
 }
 
 impl PyMftAttributesIter {
-    fn next(&mut self) -> PyResult<Option<PyObject>> {
+    fn next(&mut self) -> PyResult<Option<Py<PyAny>>> {
         // Extract the result out of the iterator, so iteration will return error, but can continue.
         Ok(self.inner.next())
     }
