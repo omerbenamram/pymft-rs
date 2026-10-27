@@ -18,7 +18,7 @@ impl FileOrFileLike {
             let maybe_path: Option<String> = {
                 let bound = path_or_file_like.bind(py);
                 bound
-                    .downcast::<PyString>()
+                    .cast::<PyString>()
                     .ok()
                     .map(|s| s.to_string_lossy().into_owned())
             };

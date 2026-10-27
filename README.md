@@ -18,13 +18,16 @@ Available on PyPi - https://pypi.org/project/mft/.
 To install from PyPi - `pip install mft`
 
 ### Wheels
-Wheels are built using the `abi3` tag (so a single wheel works for all CPython versions 3.7+).
+Wheels are built using the `abi3` tag, so a single wheel works for CPython 3.10 and newer.
+Free-threaded CPython 3.14 (`python3.14t`) gets its own `cp314t` wheel; importing `mft` there
+keeps the GIL disabled, and parsers can be created on one thread and consumed on another.
 
 Supported platforms are:
-  - Linux x86_64 (manylinux)
-  - Linux aarch64 (manylinux, cross-compiled with zig)
+  - Linux x86_64 and aarch64 (manylinux and musllinux; aarch64 and musl are cross-compiled with zig)
   - macOS universal2 (x86_64 + arm64)
   - Windows x86_64
+
+The package ships type stubs (`mft.pyi`), checked against the compiled module in CI with `mypy.stubtest`.
 
 ### Installation from sources
 Installation is possible for other platforms by installing from sources.

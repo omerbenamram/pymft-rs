@@ -1,15 +1,15 @@
 use crate::ReadSeek;
-use pyo3::prelude::*;
 use pyo3::IntoPyObjectExt;
+use pyo3::prelude::*;
 
 use crate::attribute::PyMftAttribute;
 use crate::err::PyMftError;
-use mft_rs::attribute::header::ResidentialHeader;
 use mft_rs::attribute::MftAttributeType;
+use mft_rs::attribute::header::ResidentialHeader;
 use mft_rs::{MftEntry, MftParser};
 use std::path::PathBuf;
 
-#[pyclass]
+#[pyclass(module = "mft")]
 pub struct PyMftEntry {
     // We need to keep inner entry to access it's attributes.
     inner: MftEntry,
@@ -103,9 +103,9 @@ impl PyMftEntry {
     }
 }
 
-#[pyclass(unsendable)]
+#[pyclass(module = "mft")]
 pub struct PyMftAttributesIter {
-    inner: Box<dyn Iterator<Item = Py<PyAny>> + Send>,
+    inner: Box<dyn Iterator<Item = Py<PyAny>> + Send + Sync>,
 }
 
 #[pymethods]

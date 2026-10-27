@@ -1,4 +1,4 @@
-use pyo3::{exceptions, PyErr};
+use pyo3::{PyErr, exceptions};
 
 pub struct PyMftError(pub mft_rs::err::Error);
 

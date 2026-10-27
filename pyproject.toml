@@ -1,23 +1,39 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
+# 1.14 finds free-threaded interpreters and understands PyO3 0.29+ abi3t;
+# 1.15 fixes the abi3t module entrypoint check.
+requires = ["maturin>=1.15,<2.0"]
 build-backend = "maturin"
 
 [project]
 name = "mft"
-requires-python = ">=3.7"
+description = "Python bindings for https://github.com/omerbenamram/mft"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
 dynamic = ["version"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: MacOS :: MacOS X",
     "Operating System :: POSIX",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Free Threading :: 2 - Beta",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: Implementation :: PyPy",
     "Programming Language :: Python",
     "Programming Language :: Rust",
+    "Typing :: Typed",
 ]
+
+[project.urls]
+Repository = "https://github.com/omerbenamram/pymft-rs"
 
 [project.optional-dependencies]
 test = ["pytest"]
-dev = ["maturin>=1.0,<2.0", "pytest"]
+dev = ["maturin>=1.15,<2.0", "pytest", "mypy", "typing_extensions"]
