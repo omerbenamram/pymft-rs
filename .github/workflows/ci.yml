@@ -39,10 +39,18 @@ jobs:
 
   linux:
     runs-on: ubuntu-latest
+    env:
+      MFT_EXPECT_PYTHON: ${{ matrix.python }}
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.10", "3.14t"]
+        # The build runs inside the manylinux container, so name its interpreters
+        # explicitly; setup-python only provides the host interpreter for tests.
+        include:
+          - python: "3.10"
+            interpreter: /opt/python/cp310-cp310/bin/python
+          - python: "3.14t"
+            interpreter: /opt/python/cp314-cp314t/bin/python
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -52,8 +60,9 @@ jobs:
         with:
           maturin-version: "v1.15.0"
           manylinux: auto
+          docker-options: -e MFT_EXPECT_PYTHON
           command: build
-          args: --release --locked -o dist --interpreter python${{ matrix.python }}
+          args: --release --locked -o dist --interpreter ${{ matrix.interpreter }}
       - name: Verify wheel ABI
         run: python scripts/check_wheel_abi.py "${{ matrix.python }}"
       - uses: actions/upload-artifact@v7
@@ -67,9 +76,13 @@ jobs:
   linux-cross:
     runs-on: ubuntu-latest
     # --zig runs on the host, where setup-python selects the `python` executable.
-    # PyO3 parses the trailing 't' into its free-threaded ABI flags.
+    # PyO3 0.30 strips a trailing 't' from PYO3_CROSS_PYTHON_VERSION into its
+    # free-threaded ABI flag (pyo3-build-config `CrossCompileEnvVars::parse_version`);
+    # without it a 3.14t leg builds the GIL ABI. build.rs fails the build if the
+    # configured ABI does not match MFT_EXPECT_PYTHON, so a misread flag cannot ship.
     env:
       PYO3_CROSS_PYTHON_VERSION: ${{ matrix.python }}
+      MFT_EXPECT_PYTHON: ${{ matrix.python }}
     strategy:
       fail-fast: false
       matrix:
@@ -103,6 +116,8 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    env:
+      MFT_EXPECT_PYTHON: ${{ matrix.python }}
     strategy:
       fail-fast: false
       matrix:
@@ -131,9 +146,11 @@ jobs:
   macos:
     runs-on: macos-15
     # universal2 cross-compiles the x86_64 half; PyO3 needs the version (and
-    # the trailing 't') since it cannot run that interpreter.
+    # the trailing 't', see linux-cross) since it cannot run that interpreter.
+    # build.rs checks both halves against MFT_EXPECT_PYTHON.
     env:
       PYO3_CROSS_PYTHON_VERSION: ${{ matrix.python }}
+      MFT_EXPECT_PYTHON: ${{ matrix.python }}
     strategy:
       fail-fast: false
       matrix:
