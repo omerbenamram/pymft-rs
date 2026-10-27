@@ -1,7 +1,9 @@
 use log::{Level, Log, Metadata, Record, SetLoggerError};
 
+use jiff::tz::Offset;
 use mft_rs::Timestamp;
 use pyo3::prelude::*;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAnyMethods, PyString, PyStringMethods};
 use pyo3_file::PyFileLikeObject;
 
@@ -89,21 +91,38 @@ pub fn init_logging(py: Python<'_>) -> Result<(), SetLoggerError> {
     Ok(())
 }
 
+/// `datetime.datetime` and `datetime.timezone.utc`, looked up once per interpreter.
+static DATETIME_TYPE_AND_UTC: PyOnceLock<(Py<PyAny>, Py<PyAny>)> = PyOnceLock::new();
+
+/// Converts a timestamp to a timezone-aware (UTC) `datetime.datetime`.
+///
+/// This is called for every timestamp getter, so the `datetime` module lookups are cached and the
+/// calendar fields are computed in Rust: a single Python call per timestamp, instead of importing
+/// the module and building `epoch + timedelta(...)` every time.
 pub fn date_to_pyobject(date: &Timestamp) -> PyResult<Py<PyAny>> {
-    let micros = date.as_microsecond();
-
     Python::attach(|py| {
-        let datetime_mod = py.import("datetime")?;
+        let (datetime, utc) = DATETIME_TYPE_AND_UTC.get_or_try_init(py, || -> PyResult<_> {
+            let datetime_mod = py.import("datetime")?;
+            let datetime = datetime_mod.getattr("datetime")?.unbind();
+            let utc = datetime_mod.getattr("timezone")?.getattr("utc")?.unbind();
+            Ok((datetime, utc))
+        })?;
 
-        let datetime = datetime_mod.getattr("datetime")?;
-        let timezone = datetime_mod.getattr("timezone")?;
-        let utc = timezone.getattr("utc")?;
-        let epoch = datetime.call1((1970, 1, 1, 0, 0, 0, 0, utc))?;
-
-        let timedelta = datetime_mod.getattr("timedelta")?;
-        let delta = timedelta.call1((0, 0, micros))?;
-
-        let dt = epoch.call_method1("__add__", (delta,))?;
+        // Truncate to whole microseconds first (toward zero, like `as_microsecond`), so values
+        // before 1970 round the same way the previous `epoch + timedelta(microseconds=...)` did.
+        let micros = Timestamp::from_microsecond(date.as_microsecond())
+            .expect("truncating toward the epoch stays in range");
+        let dt = Offset::UTC.to_datetime(micros);
+        let dt = datetime.bind(py).call1((
+            dt.year(),
+            dt.month(),
+            dt.day(),
+            dt.hour(),
+            dt.minute(),
+            dt.second(),
+            dt.subsec_nanosecond() / 1_000,
+            utc.bind(py),
+        ))?;
         Ok(dt.unbind())
     })
 }

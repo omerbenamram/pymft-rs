@@ -19,7 +19,8 @@ num-traits = "0.2"
 bitflags = "2"
 log = { version = "0.4", features = ["std"] }
 pyo3-file = "0.18.0"
-serde_json = "1"
+jiff = { version = "0.2", default-features = false, features = ["std"] }
+sonic-rs = "0.5"
 csv = "1"
 
 [build-dependencies]
