@@ -7,7 +7,7 @@ use mft_rs::attribute::header::{MftAttributeHeader, ResidentialHeader};
 use mft_rs::attribute::non_resident_attr::NonResidentAttr;
 use mft_rs::attribute::x40::ObjectIdAttr;
 use mft_rs::attribute::x90::{IndexEntryHeader, IndexRootAttr, IndexRootFlags};
-use mft_rs::{FileNameAttr, MftAttribute, MftEntry, StandardInfoAttr};
+use mft_rs::{FileNameAttr, MftEntry, StandardInfoAttr};
 
 use num_traits::cast::ToPrimitive;
 
@@ -25,7 +25,6 @@ pub struct PyMftAttribute {
     /// record is in it, and re-parse the content when it is asked for.
     entry: Arc<MftEntry>,
     start_offset: usize,
-    record_length: usize,
     /// Hex value of attribute type
     #[pyo3(get)]
     pub type_code: u32,
@@ -44,28 +43,22 @@ pub struct PyMftAttribute {
 }
 
 impl PyMftAttribute {
-    pub fn from_mft_attribute(
+    pub fn from_header(
         py: Python,
         entry: &Arc<MftEntry>,
-        attr: &MftAttribute,
+        header: &MftAttributeHeader,
     ) -> PyResult<Py<Self>> {
         Py::new(
             py,
             PyMftAttribute {
-                type_name: format!("{:?}", attr.header.type_code),
-                type_code: attr.header.type_code.to_u32().unwrap(),
-                name: attr.header.name.to_utf8_string(),
-                data_flags: flags_to_string(&attr.header.data_flags),
-                is_resident: {
-                    matches!(
-                        attr.header.residential_header,
-                        ResidentialHeader::Resident(_)
-                    )
-                },
-                data_size: attr.header.record_length,
+                type_name: format!("{:?}", header.type_code),
+                type_code: header.type_code.to_u32().unwrap(),
+                name: header.name.to_utf8_string(),
+                data_flags: flags_to_string(&header.data_flags),
+                is_resident: matches!(header.residential_header, ResidentialHeader::Resident(_)),
+                data_size: header.record_length,
                 entry: Arc::clone(entry),
-                start_offset: attr.header.start_offset as usize,
-                record_length: attr.header.record_length as usize,
+                start_offset: header.start_offset as usize,
             },
         )
     }
@@ -84,8 +77,8 @@ impl PyMftAttribute {
     /// - `PyMftAttributeOther` (Currently unparsed in rust)
     #[getter]
     pub fn attribute_content(&self) -> PyResult<Py<PyAny>> {
-        // `PyMftEntry::attributes` already parsed this record, so it is in bounds and has a header.
-        let record = &self.entry.data[self.start_offset..self.start_offset + self.record_length];
+        // `PyMftEntry::attributes` already parsed this record's header, so it is in bounds.
+        let record = &self.entry.data[self.start_offset..][..self.data_size as usize];
         let header = MftAttributeHeader::from_slice(record, self.start_offset as u64)
             .map_err(PyMftError)?
             .expect("an $END marker is not an attribute");
@@ -119,8 +112,11 @@ impl PyMftAttribute {
                 MftAttributeContent::AttrX60(_)
                 | MftAttributeContent::AttrX70(_)
                 | MftAttributeContent::AttrXC0(_) => {
-                    PyMftAttributeOther::from_data(py, resident_value(record, &header))?
-                        .into_py_any(py)?
+                    let ResidentialHeader::Resident(resident) = &header.residential_header else {
+                        unreachable!("only resident attributes have parsed content");
+                    };
+                    let value = resident.value(record).map_err(PyMftError)?;
+                    PyMftAttributeOther::from_data(py, value)?.into_py_any(py)?
                 }
                 // Non-resident attribute: the content lives in clusters elsewhere on the volume.
                 MftAttributeContent::DataRun(info) => {
@@ -128,18 +124,6 @@ impl PyMftAttribute {
                 }
             })
         })
-    }
-}
-
-/// The value bytes of a resident attribute's record. mft parsed the content from this same range,
-/// so it is in bounds.
-fn resident_value<'a>(record: &'a [u8], header: &MftAttributeHeader) -> &'a [u8] {
-    match &header.residential_header {
-        ResidentialHeader::Resident(resident) => {
-            let start = resident.data_offset as usize;
-            &record[start..start + resident.data_size as usize]
-        }
-        ResidentialHeader::NonResident(_) => &[],
     }
 }
 
@@ -231,7 +215,7 @@ impl PyMftAttributeX20Entry {
 
 #[pyclass(module = "mft")]
 pub struct PyMftAttributeX20 {
-    entries: Vec<Py<PyMftAttributeX20Entry>>,
+    entries: Vec<Py<PyAny>>,
 }
 
 #[pyclass(module = "mft")]
@@ -262,7 +246,7 @@ impl PyMftAttributeX20 {
         let entries = attr
             .entries
             .iter()
-            .map(|entry| PyMftAttributeX20Entry::from_x20_entry(py, entry))
+            .map(|entry| PyMftAttributeX20Entry::from_x20_entry(py, entry)?.into_py_any(py))
             .collect::<PyResult<_>>()?;
         Py::new(py, PyMftAttributeX20 { entries })
     }
@@ -275,7 +259,7 @@ impl PyMftAttributeX20 {
             let attributes: Vec<Py<PyAny>> = self
                 .entries
                 .iter()
-                .map(|entry| entry.clone_ref(py).into_any())
+                .map(|entry| entry.clone_ref(py))
                 .collect();
 
             Py::new(

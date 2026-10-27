@@ -42,10 +42,11 @@ impl PyMftEntry {
         Python::attach(|py| {
             let mut attributes = vec![];
 
-            for attribute_result in self.inner.iter_attributes() {
-                match attribute_result {
-                    Ok(attribute) => {
-                        match PyMftAttribute::from_mft_attribute(py, &self.inner, &attribute)
+            // Only headers: content is parsed when `attribute_content` is read.
+            for record in self.inner.iter_attribute_records_matching(None) {
+                match record {
+                    Ok((header, _)) => {
+                        match PyMftAttribute::from_header(py, &self.inner, &header)
                             .and_then(|entry| entry.into_py_any(py))
                         {
                             Ok(obj) => attributes.push(obj),
@@ -78,9 +79,9 @@ impl PyMftEntry {
             .map_or_else(|| "[UNKNOWN]".to_string(), |path| windows_path(&path));
 
         let file_size = entry
-            .iter_attributes_matching(Some(vec![MftAttributeType::DATA]))
+            .iter_attribute_records_matching(Some(vec![MftAttributeType::DATA]))
             .find_map(Result::ok)
-            .map_or(0, |attr| attr.header.value_size());
+            .map_or(0, |(header, _)| header.value_size());
 
         Py::new(
             py,

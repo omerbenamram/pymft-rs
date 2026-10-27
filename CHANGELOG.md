@@ -37,6 +37,7 @@ and this project adheres to
 - Parser, entry and iterator classes are no longer `unsendable`, so they can be passed between
   threads instead of raising when touched from a thread other than the one that created them.
 - Classes now report `mft` as their `__module__` (was `builtins`).
+- `PyMftEntry.attributes()` parses only attribute headers; content is parsed when `attribute_content` is read. An attribute whose content fails to parse is now listed, and the error is raised from `attribute_content` (it used to replace the whole attribute with an exception).
 - `PyMftAttributeX20Entry` and `PyMftX20EntriesIter` are now exported from the module.
 - Replace the `Any`-typed stub with precise types, verified in CI with `mypy.stubtest`.
 - Fold wheel building and PyPI publishing into a single CI workflow (publishes on `v*` tags with

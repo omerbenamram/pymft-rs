@@ -340,7 +340,7 @@ dependencies = [
  "csv",
  "jiff",
  "log",
- "mft 0.8.0 (git+https://github.com/omerbenamram/mft?rev=6305ba1c5102e24943928dabc7ec2b8d5ce58de4)",
+ "mft 0.8.0 (git+https://github.com/omerbenamram/mft?rev=bc9de4db50f4c8ad13f23c8cf79116b8ff40bd80)",
  "num-traits",
  "pyo3",
  "pyo3-build-config",
@@ -351,7 +351,7 @@ dependencies = [
 [[package]]
 name = "mft"
 version = "0.8.0"
-source = "git+https://github.com/omerbenamram/mft?rev=6305ba1c5102e24943928dabc7ec2b8d5ce58de4#6305ba1c5102e24943928dabc7ec2b8d5ce58de4"
+source = "git+https://github.com/omerbenamram/mft?rev=bc9de4db50f4c8ad13f23c8cf79116b8ff40bd80#bc9de4db50f4c8ad13f23c8cf79116b8ff40bd80"
 dependencies = [
  "bitflags 2.13.2",
  "byteorder",
