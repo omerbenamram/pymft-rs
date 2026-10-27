@@ -4,11 +4,10 @@ use pyo3::prelude::*;
 
 use crate::attribute::PyMftAttribute;
 use crate::err::PyMftError;
-use crate::utils::flags_to_string;
+use crate::utils::{flags_to_string, windows_path};
 use mft_rs::attribute::MftAttributeType;
 use mft_rs::attribute::header::ResidentialHeader;
 use mft_rs::{MftEntry, MftParser};
-use std::path::PathBuf;
 
 #[pyclass(module = "mft")]
 pub struct PyMftEntry {
@@ -73,9 +72,7 @@ impl PyMftEntry {
         let full_path = parser
             .get_full_path_for_entry(&entry)
             .expect("unreachable")
-            .unwrap_or_else(|| PathBuf::from("[UNKNOWN]"))
-            .to_string_lossy()
-            .to_string();
+            .map_or_else(|| "[UNKNOWN]".to_string(), |path| windows_path(&path));
 
         let file_size = entry
             .iter_attributes_matching(Some(vec![MftAttributeType::DATA]))

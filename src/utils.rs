@@ -6,6 +6,7 @@ use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAnyMethods, PyString, PyStringMethods};
 use pyo3_file::PyFileLikeObject;
+use std::path::Path;
 
 #[derive(Debug)]
 pub enum FileOrFileLike {
@@ -144,4 +145,12 @@ where
     let mut out = String::new();
     bitflags::parser::to_writer(flags, &mut out).expect("writing to a String can't fail");
     out
+}
+
+/// Joins a resolved path with `\`, the way Windows shows NTFS paths, whatever the host platform.
+pub fn windows_path(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("\\")
 }

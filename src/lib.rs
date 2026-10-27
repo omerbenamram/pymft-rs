@@ -20,9 +20,9 @@ use pyo3::exceptions;
 use pyo3::prelude::*;
 
 use crate::attribute::{
-    PyMftAttribute, PyMftAttributeOther, PyMftAttributeX10, PyMftAttributeX20,
-    PyMftAttributeX20Entry, PyMftAttributeX30, PyMftAttributeX40, PyMftAttributeX80,
-    PyMftAttributeX90, PyMftX20EntriesIter,
+    PyMftAttribute, PyMftAttributeNonResident, PyMftAttributeOther, PyMftAttributeX10,
+    PyMftAttributeX20, PyMftAttributeX20Entry, PyMftAttributeX30, PyMftAttributeX40,
+    PyMftAttributeX80, PyMftAttributeX90, PyMftDataRun, PyMftIndexEntry, PyMftX20EntriesIter,
 };
 use crate::entry::PyMftAttributesIter;
 use crate::err::PyMftError;
@@ -303,6 +303,9 @@ fn mft(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMftAttributeX40>()?;
     m.add_class::<PyMftAttributeX80>()?;
     m.add_class::<PyMftAttributeX90>()?;
+    m.add_class::<PyMftIndexEntry>()?;
+    m.add_class::<PyMftAttributeNonResident>()?;
+    m.add_class::<PyMftDataRun>()?;
     m.add_class::<PyMftAttributeOther>()?;
 
     Ok(())

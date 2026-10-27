@@ -8,8 +8,22 @@ and this project adheres to
 
 ## [0.8.0] - Unreleased
 
+### Added
+
+- Non-resident attributes expose their data runs: `attribute_content` returns a
+  `PyMftAttributeNonResident` whose `data_runs()` lists `PyMftDataRun` objects (`lcn_offset`,
+  `lcn_length`, `is_sparse`). Ported from #12 by @uckelman-sf.
+- `PyMftAttributeX90` (`$INDEX_ROOT`) exposes `relative_offset_to_index_node`,
+  `index_node_length`, `index_node_allocation_length`, `is_large_index`, and `index_entries()`,
+  a list of `PyMftIndexEntry` objects with the referenced entry and its `$FILE_NAME` copy
+  (`fname_info`). Ported from #12.
+
 ### Changed
 
+- **Breaking:** `attribute_content` of a non-resident attribute is now a
+  `PyMftAttributeNonResident` instead of `None`.
+- **Breaking:** `PyMftEntry.full_path` uses `\` separators on every platform (Linux and macOS
+  builds used `/`), replacing #13 by @uckelman-sf.
 - **Breaking:** require Python 3.10 or newer (the abi3 floor is now `abi3-py310`, matching `evtx`).
 - Update to PyO3 0.30.1 and pyo3-file 0.18.0, and move the crate to the Rust 2024 edition.
 - Build free-threaded CPython 3.14 (`cp314t`) wheels alongside the abi3 wheels, and add musllinux

@@ -1,9 +1,11 @@
 use mft_rs::attribute::MftAttributeContent;
+use mft_rs::attribute::data_run::{DataRun, RunType};
 use mft_rs::attribute::header::ResidentialHeader;
+use mft_rs::attribute::non_resident_attr::NonResidentAttr;
 use mft_rs::attribute::raw::RawAttribute;
 use mft_rs::attribute::x40::ObjectIdAttr;
 use mft_rs::attribute::x80::DataAttr;
-use mft_rs::attribute::x90::IndexRootAttr;
+use mft_rs::attribute::x90::{IndexEntryHeader, IndexRootAttr, IndexRootFlags};
 use mft_rs::{FileNameAttr, MftAttribute, StandardInfoAttr};
 
 use num_traits::cast::ToPrimitive;
@@ -65,8 +67,9 @@ impl PyMftAttribute {
     /// - `PyMftAttributeX40`
     /// - `PyMftAttributeX80`
     /// - `PyMftAttributeX90`
+    /// - `PyMftAttributeNonResident` (if attribute content is non-resident)
     /// - `PyMftAttributeOther` (Currently unparsed in rust)
-    /// - `None` (if attribute content is non-resident)
+    /// - `None` (if the attribute has no content)
     #[getter]
     pub fn attribute_content(&self) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
@@ -92,8 +95,10 @@ impl PyMftAttribute {
                 MftAttributeContent::Raw(raw) => {
                     PyMftAttributeOther::from_raw(py, raw.clone())?.into_py_any(py)?
                 }
-                // Non-resident attribute (content isn't parsed / materialized).
-                MftAttributeContent::DataRun(_) => py.None(),
+                // Non-resident attribute: the content lives in clusters elsewhere on the volume.
+                MftAttributeContent::DataRun(info) => {
+                    PyMftAttributeNonResident::from_non_resident(py, info)?.into_py_any(py)?
+                }
                 MftAttributeContent::None => py.None(),
             })
         })
@@ -387,10 +392,28 @@ pub struct PyMftAttributeX90 {
     #[pyo3(get)]
     /// The index entry number of cluster blocks
     pub index_entry_number_of_cluster_blocks: u32,
+    #[pyo3(get)]
+    pub relative_offset_to_index_node: u32,
+    #[pyo3(get)]
+    pub index_node_length: u32,
+    #[pyo3(get)]
+    pub index_node_allocation_length: u32,
+    #[pyo3(get)]
+    /// Whether the index continues in `$INDEX_ALLOCATION` (only the entries in the
+    /// index root are available here).
+    pub is_large_index: bool,
+    index_entries: Vec<Py<PyMftIndexEntry>>,
 }
 
 impl PyMftAttributeX90 {
     pub fn from_x90(py: Python, attr: &IndexRootAttr) -> PyResult<Py<Self>> {
+        let index_entries = attr
+            .index_entries
+            .index_entries
+            .iter()
+            .map(|entry| PyMftIndexEntry::from_index_entry(py, entry))
+            .collect::<PyResult<_>>()?;
+
         Py::new(
             py,
             PyMftAttributeX90 {
@@ -398,6 +421,109 @@ impl PyMftAttributeX90 {
                 collation_rule: attr.collation_rule as u32,
                 index_entry_size: attr.index_entry_size,
                 index_entry_number_of_cluster_blocks: attr.index_entry_number_of_cluster_blocks,
+                relative_offset_to_index_node: attr.relative_offset_to_index_node,
+                index_node_length: attr.index_node_length,
+                index_node_allocation_length: attr.index_node_allocation_length,
+                is_large_index: attr.index_root_flags.contains(IndexRootFlags::LARGE_INDEX),
+                index_entries,
+            },
+        )
+    }
+}
+
+#[pymethods]
+impl PyMftAttributeX90 {
+    /// The index entries stored in the index root itself.
+    pub fn index_entries(&self, py: Python) -> Vec<Py<PyMftIndexEntry>> {
+        self.index_entries
+            .iter()
+            .map(|entry| entry.clone_ref(py))
+            .collect()
+    }
+}
+
+/// An entry of a `$FILE_NAME` index (`$I30`), pointing at the file it names.
+#[pyclass(module = "mft")]
+pub struct PyMftIndexEntry {
+    #[pyo3(get)]
+    pub mft_reference_entry_id: u64,
+    #[pyo3(get)]
+    pub mft_reference_entry_sequence: u16,
+    #[pyo3(get)]
+    pub index_record_length: u16,
+    #[pyo3(get)]
+    pub attr_fname_length: u16,
+    #[pyo3(get)]
+    pub flags: String,
+    #[pyo3(get)]
+    /// The copy of the file's `$FILE_NAME` attribute kept in the index.
+    pub fname_info: Py<PyMftAttributeX30>,
+}
+
+impl PyMftIndexEntry {
+    pub fn from_index_entry(py: Python, entry: &IndexEntryHeader) -> PyResult<Py<Self>> {
+        Py::new(
+            py,
+            PyMftIndexEntry {
+                mft_reference_entry_id: entry.mft_reference.entry,
+                mft_reference_entry_sequence: entry.mft_reference.sequence,
+                index_record_length: entry.index_record_length,
+                attr_fname_length: entry.attr_fname_length,
+                flags: flags_to_string(&entry.flags),
+                fname_info: PyMftAttributeX30::from_x30(py, entry.fname_info.clone())?,
+            },
+        )
+    }
+}
+
+/// The content of a non-resident attribute: the data runs that locate it on the volume.
+#[pyclass(module = "mft")]
+pub struct PyMftAttributeNonResident {
+    inner: NonResidentAttr,
+}
+
+impl PyMftAttributeNonResident {
+    pub fn from_non_resident(py: Python, attr: &NonResidentAttr) -> PyResult<Py<Self>> {
+        Py::new(
+            py,
+            PyMftAttributeNonResident {
+                inner: attr.clone(),
+            },
+        )
+    }
+}
+
+#[pymethods]
+impl PyMftAttributeNonResident {
+    pub fn data_runs(&self, py: Python) -> PyResult<Vec<Py<PyMftDataRun>>> {
+        self.inner
+            .data_runs
+            .iter()
+            .map(|run| PyMftDataRun::from_data_run(py, run))
+            .collect()
+    }
+}
+
+/// A contiguous run of clusters. `lcn_offset` is the absolute cluster number where the run
+/// starts, and is 0 for sparse runs, which have no clusters on disk.
+#[pyclass(module = "mft")]
+pub struct PyMftDataRun {
+    #[pyo3(get)]
+    pub lcn_offset: u64,
+    #[pyo3(get)]
+    pub lcn_length: u64,
+    #[pyo3(get)]
+    pub is_sparse: bool,
+}
+
+impl PyMftDataRun {
+    pub fn from_data_run(py: Python, run: &DataRun) -> PyResult<Py<Self>> {
+        Py::new(
+            py,
+            PyMftDataRun {
+                lcn_offset: run.lcn_offset,
+                lcn_length: run.lcn_length,
+                is_sparse: run.run_type == RunType::Sparse,
             },
         )
     }

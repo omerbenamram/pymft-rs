@@ -83,10 +83,12 @@ class PyMftAttribute:
         | PyMftAttributeX40
         | PyMftAttributeX80
         | PyMftAttributeX90
+        | PyMftAttributeNonResident
         | PyMftAttributeOther
         | None
     ):
-        """The parsed resident content, or `None` for a non-resident attribute."""
+        """The parsed resident content, the data runs of a non-resident attribute,
+        or `None` if the attribute has no content."""
 
 @final
 class PyMftAttributeX10:
@@ -178,6 +180,41 @@ class PyMftAttributeX90:
     """Collation rule used to sort the index entries."""
     index_entry_size: int
     index_entry_number_of_cluster_blocks: int
+    relative_offset_to_index_node: int
+    index_node_length: int
+    index_node_allocation_length: int
+    is_large_index: bool
+    """Whether the index continues in `$INDEX_ALLOCATION` (only the entries in the
+    index root are available here)."""
+    def index_entries(self) -> list[PyMftIndexEntry]:
+        """The index entries stored in the index root itself."""
+
+@final
+class PyMftIndexEntry:
+    """An entry of a `$FILE_NAME` index (`$I30`), pointing at the file it names."""
+
+    mft_reference_entry_id: int
+    mft_reference_entry_sequence: int
+    index_record_length: int
+    attr_fname_length: int
+    flags: str
+    fname_info: PyMftAttributeX30
+    """The copy of the file's `$FILE_NAME` attribute kept in the index."""
+
+@final
+class PyMftAttributeNonResident:
+    """The content of a non-resident attribute: the data runs that locate it on the volume."""
+
+    def data_runs(self) -> list[PyMftDataRun]: ...
+
+@final
+class PyMftDataRun:
+    """A contiguous run of clusters. `lcn_offset` is the absolute cluster number where the run
+    starts, and is 0 for sparse runs, which have no clusters on disk."""
+
+    lcn_offset: int
+    lcn_length: int
+    is_sparse: bool
 
 @final
 class PyMftAttributeOther:
