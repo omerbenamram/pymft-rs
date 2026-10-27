@@ -59,3 +59,16 @@ def test_doesnt_yield_zeroed_entries(sample_mft: Path):
             assert False, (e, entry.entry_id)
 
 
+
+
+def test_entry_header_fields(sample_mft: Path):
+    parser = PyMftParser(str(sample_mft))
+
+    entry: PyMftEntry = next(parser.entries())
+
+    assert entry.hard_link_count == 1
+    assert entry.flags == "ALLOCATED"
+
+    attribute = next(entry.attributes())
+    assert attribute.attribute_content.file_flags == "FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM"
+    assert attribute.data_flags == "(empty)"

@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+- Fix `PyMftEntry.hard_link_count` and `base_entry_sequence`, which were always 0.
+- Format flags as `A | B` instead of bitflags' debug format `TypeName(A | B)`.
+
 ## [0.7.0]
 
 - Align package version with `mft` core version (`0.7.0`).

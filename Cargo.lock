@@ -342,6 +342,7 @@ dependencies = [
 name = "mft"
 version = "0.7.0"
 dependencies = [
+ "bitflags 2.10.0",
  "csv",
  "log",
  "mft 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
