@@ -4,6 +4,7 @@ use pyo3::prelude::*;
 
 use crate::attribute::PyMftAttribute;
 use crate::err::PyMftError;
+use crate::utils::flags_to_string;
 use mft_rs::attribute::MftAttributeType;
 use mft_rs::attribute::header::ResidentialHeader;
 use mft_rs::{MftEntry, MftParser};
@@ -90,9 +91,9 @@ impl PyMftEntry {
                 entry_id: entry.header.record_number,
                 sequence: entry.header.sequence,
                 base_entry_id: entry.header.base_reference.entry,
-                base_entry_sequence: 0,
-                hard_link_count: 0,
-                flags: format!("{:?}", entry.header.flags),
+                base_entry_sequence: entry.header.base_reference.sequence,
+                hard_link_count: entry.header.hard_link_count,
+                flags: flags_to_string(&entry.header.flags),
                 used_entry_size: entry.header.used_entry_size,
                 total_entry_size: entry.header.total_entry_size,
                 inner: entry,

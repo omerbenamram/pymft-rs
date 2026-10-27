@@ -71,3 +71,16 @@ def test_datetime_values(sample_mft: Path):
     assert content.modified == expected
     assert content.mft_modified == expected
     assert content.accessed == expected
+
+
+def test_entry_header_fields(sample_mft: Path):
+    parser = PyMftParser(str(sample_mft))
+
+    entry: PyMftEntry = next(parser.entries())
+
+    assert entry.hard_link_count == 1
+    assert entry.flags == "ALLOCATED"
+
+    attribute = next(entry.attributes())
+    assert attribute.attribute_content.file_flags == "FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM"
+    assert attribute.data_flags == "(empty)"

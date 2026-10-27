@@ -122,3 +122,22 @@ pub fn date_to_pyobject(date: &Timestamp) -> PyResult<Py<PyAny>> {
         Ok(dt.unbind())
     })
 }
+
+/// Formats flags as `A | B`, matching the `mft` 0.6 output (bitflags 2's `Debug` output is
+/// `TypeName(A | B)`). Empty flags are the name of a zero-valued flag if any, else `(empty)`.
+pub fn flags_to_string<F>(flags: &F) -> String
+where
+    F: bitflags::Flags,
+    F::Bits: bitflags::parser::WriteHex,
+{
+    if flags.is_empty() {
+        return F::FLAGS
+            .iter()
+            .find(|flag| flag.value().is_empty())
+            .map_or_else(|| "(empty)".to_string(), |flag| flag.name().to_string());
+    }
+
+    let mut out = String::new();
+    bitflags::parser::to_writer(flags, &mut out).expect("writing to a String can't fail");
+    out
+}

@@ -405,6 +405,7 @@ dependencies = [
 name = "mft"
 version = "0.8.0"
 dependencies = [
+ "bitflags 2.13.2",
  "csv",
  "jiff",
  "log",
