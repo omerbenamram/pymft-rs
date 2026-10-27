@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::ReadSeek;
 use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
@@ -12,7 +14,7 @@ use mft_rs::{MftEntry, MftParser};
 #[pyclass(module = "mft")]
 pub struct PyMftEntry {
     // We need to keep inner entry to access it's attributes.
-    inner: MftEntry,
+    inner: Arc<MftEntry>,
     #[pyo3(get)]
     pub entry_id: u64,
     #[pyo3(get)]
@@ -41,14 +43,16 @@ impl PyMftEntry {
         Python::attach(|py| {
             let mut attributes = vec![];
 
-            for attribute_result in self.inner.iter_attributes() {
+            for (index, attribute_result) in self.inner.iter_attributes().enumerate() {
                 match attribute_result {
-                    Ok(attribute) => match PyMftAttribute::from_mft_attribute(py, attribute)
-                        .and_then(|entry| entry.into_py_any(py))
-                    {
-                        Ok(obj) => attributes.push(obj),
-                        Err(e) => attributes.push(e.into_py_any(py).unwrap()),
-                    },
+                    Ok(attribute) => {
+                        match PyMftAttribute::from_mft_attribute(py, &self.inner, index, &attribute)
+                            .and_then(|entry| entry.into_py_any(py))
+                        {
+                            Ok(obj) => attributes.push(obj),
+                            Err(e) => attributes.push(e.into_py_any(py).unwrap()),
+                        }
+                    }
                     Err(e) => attributes.push(PyErr::from(PyMftError(e)).into_py_any(py).unwrap()),
                 }
             }
@@ -93,7 +97,7 @@ impl PyMftEntry {
                 flags: flags_to_string(&entry.header.flags),
                 used_entry_size: entry.header.used_entry_size,
                 total_entry_size: entry.header.total_entry_size,
-                inner: entry,
+                inner: Arc::new(entry),
                 full_path,
                 file_size,
             },
