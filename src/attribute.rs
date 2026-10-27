@@ -87,7 +87,7 @@ impl PyMftAttribute {
                     PyMftAttributeX80::from_x80(py, info.clone())?.into_py_any(py)?
                 }
                 MftAttributeContent::AttrX90(info) => {
-                    PyMftAttributeX90::from_x90(py, info.clone())?.into_py_any(py)?
+                    PyMftAttributeX90::from_x90(py, info)?.into_py_any(py)?
                 }
                 MftAttributeContent::Raw(raw) => {
                     PyMftAttributeOther::from_raw(py, raw.clone())?.into_py_any(py)?
@@ -390,7 +390,7 @@ pub struct PyMftAttributeX90 {
 }
 
 impl PyMftAttributeX90 {
-    pub fn from_x90(py: Python, attr: IndexRootAttr) -> PyResult<Py<Self>> {
+    pub fn from_x90(py: Python, attr: &IndexRootAttr) -> PyResult<Py<Self>> {
         Py::new(
             py,
             PyMftAttributeX90 {

@@ -59,3 +59,15 @@ def test_doesnt_yield_zeroed_entries(sample_mft: Path):
             assert False, (e, entry.entry_id)
 
 
+
+
+def test_datetime_values(sample_mft: Path):
+    parser = PyMftParser(str(sample_mft))
+    sample_record: PyMftEntry = next(parser.entries())
+    content = next(sample_record.attributes()).attribute_content
+
+    expected = datetime.datetime(2007, 6, 30, 12, 50, 52, 252395, tzinfo=datetime.timezone.utc)
+    assert content.created == expected
+    assert content.modified == expected
+    assert content.mft_modified == expected
+    assert content.accessed == expected
