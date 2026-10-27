@@ -108,7 +108,11 @@ pub fn date_to_pyobject(date: &Timestamp) -> PyResult<Py<PyAny>> {
             Ok((datetime, utc))
         })?;
 
-        let dt = Offset::UTC.to_datetime(*date);
+        // Truncate to whole microseconds first (toward zero, like `as_microsecond`), so values
+        // before 1970 round the same way the previous `epoch + timedelta(microseconds=...)` did.
+        let micros = Timestamp::from_microsecond(date.as_microsecond())
+            .expect("truncating toward the epoch stays in range");
+        let dt = Offset::UTC.to_datetime(micros);
         let dt = datetime.bind(py).call1((
             dt.year(),
             dt.month(),
