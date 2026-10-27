@@ -22,6 +22,11 @@ and this project adheres to
 - Fold wheel building and PyPI publishing into a single CI workflow (publishes on `v*` tags with
   `uv publish`), and verify each wheel's ABI tag before upload.
 
+### Fixed
+
+- Fix `PyMftEntry.hard_link_count` and `base_entry_sequence`, which were always 0.
+- Format flags as `A | B` instead of bitflags' debug format `TypeName(A | B)`.
+
 ## [0.7.0]
 
 - Align package version with `mft` core version (`0.7.0`).
