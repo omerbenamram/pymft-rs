@@ -85,10 +85,9 @@ class PyMftAttribute:
         | PyMftAttributeX90
         | PyMftAttributeNonResident
         | PyMftAttributeOther
-        | None
     ):
-        """The parsed resident content, the data runs of a non-resident attribute,
-        or `None` if the attribute has no content."""
+        """The parsed resident content, or the data runs of a non-resident attribute.
+        Attributes without a class of their own give their raw value as `PyMftAttributeOther`."""
 
 @final
 class PyMftAttributeX10:

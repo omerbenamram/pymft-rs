@@ -8,7 +8,6 @@ use crate::attribute::PyMftAttribute;
 use crate::err::PyMftError;
 use crate::utils::{flags_to_string, windows_path};
 use mft_rs::attribute::MftAttributeType;
-use mft_rs::attribute::header::ResidentialHeader;
 use mft_rs::{MftEntry, MftParser};
 
 #[pyclass(module = "mft")]
@@ -43,10 +42,10 @@ impl PyMftEntry {
         Python::attach(|py| {
             let mut attributes = vec![];
 
-            for (index, attribute_result) in self.inner.iter_attributes().enumerate() {
+            for attribute_result in self.inner.iter_attributes() {
                 match attribute_result {
                     Ok(attribute) => {
-                        match PyMftAttribute::from_mft_attribute(py, &self.inner, index, &attribute)
+                        match PyMftAttribute::from_mft_attribute(py, &self.inner, &attribute)
                             .and_then(|entry| entry.into_py_any(py))
                         {
                             Ok(obj) => attributes.push(obj),
@@ -81,10 +80,7 @@ impl PyMftEntry {
         let file_size = entry
             .iter_attributes_matching(Some(vec![MftAttributeType::DATA]))
             .find_map(Result::ok)
-            .map_or(0, |attr| match &attr.header.residential_header {
-                ResidentialHeader::Resident(r) => u64::from(r.data_size),
-                ResidentialHeader::NonResident(nr) => nr.file_size,
-            });
+            .map_or(0, |attr| attr.header.value_size());
 
         Py::new(
             py,

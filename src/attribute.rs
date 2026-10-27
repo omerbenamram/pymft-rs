@@ -3,7 +3,7 @@ use std::sync::Arc;
 use jiff::Timestamp;
 use mft_rs::attribute::MftAttributeContent;
 use mft_rs::attribute::data_run::{DataRun, RunType};
-use mft_rs::attribute::header::ResidentialHeader;
+use mft_rs::attribute::header::{MftAttributeHeader, ResidentialHeader};
 use mft_rs::attribute::non_resident_attr::NonResidentAttr;
 use mft_rs::attribute::x40::ObjectIdAttr;
 use mft_rs::attribute::x90::{IndexEntryHeader, IndexRootAttr, IndexRootFlags};
@@ -21,10 +21,11 @@ use crate::utils::{date_to_pyobject, flags_to_string};
 
 #[pyclass(module = "mft")]
 pub struct PyMftAttribute {
-    /// Attributes borrow from their entry's record, so keep the entry and re-parse the
-    /// attribute (the `index`-th one) when its content is asked for.
+    /// Attributes borrow from their entry's record, so keep the entry and where the attribute's
+    /// record is in it, and re-parse the content when it is asked for.
     entry: Arc<MftEntry>,
-    index: usize,
+    start_offset: usize,
+    record_length: usize,
     /// Hex value of attribute type
     #[pyo3(get)]
     pub type_code: u32,
@@ -46,7 +47,6 @@ impl PyMftAttribute {
     pub fn from_mft_attribute(
         py: Python,
         entry: &Arc<MftEntry>,
-        index: usize,
         attr: &MftAttribute,
     ) -> PyResult<Py<Self>> {
         Py::new(
@@ -64,7 +64,8 @@ impl PyMftAttribute {
                 },
                 data_size: attr.header.record_length,
                 entry: Arc::clone(entry),
-                index,
+                start_offset: attr.header.start_offset as usize,
+                record_length: attr.header.record_length as usize,
             },
         )
     }
@@ -83,15 +84,15 @@ impl PyMftAttribute {
     /// - `PyMftAttributeOther` (Currently unparsed in rust)
     #[getter]
     pub fn attribute_content(&self) -> PyResult<Py<PyAny>> {
-        let attr = self
-            .entry
-            .iter_attributes()
-            .nth(self.index)
-            .expect("the attribute was parsed from this entry")
-            .map_err(PyMftError)?;
+        // `PyMftEntry::attributes` already parsed this record, so it is in bounds and has a header.
+        let record = &self.entry.data[self.start_offset..self.start_offset + self.record_length];
+        let header = MftAttributeHeader::from_slice(record, self.start_offset as u64)
+            .map_err(PyMftError)?
+            .expect("an $END marker is not an attribute");
+        let content = MftAttributeContent::from_record(record, &header).map_err(PyMftError)?;
 
         Python::attach(|py| {
-            Ok(match &attr.data {
+            Ok(match &content {
                 MftAttributeContent::AttrX10(info) => {
                     PyMftAttributeX10::from_x10(py, info.clone())?.into_py_any(py)?
                 }
@@ -118,7 +119,7 @@ impl PyMftAttribute {
                 MftAttributeContent::AttrX60(_)
                 | MftAttributeContent::AttrX70(_)
                 | MftAttributeContent::AttrXC0(_) => {
-                    PyMftAttributeOther::from_data(py, resident_value(&self.entry, &attr))?
+                    PyMftAttributeOther::from_data(py, resident_value(record, &header))?
                         .into_py_any(py)?
                 }
                 // Non-resident attribute: the content lives in clusters elsewhere on the volume.
@@ -130,15 +131,13 @@ impl PyMftAttribute {
     }
 }
 
-/// The value bytes of a resident attribute (empty for a non-resident one).
-fn resident_value<'a>(entry: &'a MftEntry, attr: &MftAttribute) -> &'a [u8] {
-    match &attr.header.residential_header {
+/// The value bytes of a resident attribute's record. mft parsed the content from this same range,
+/// so it is in bounds.
+fn resident_value<'a>(record: &'a [u8], header: &MftAttributeHeader) -> &'a [u8] {
+    match &header.residential_header {
         ResidentialHeader::Resident(resident) => {
-            let start = attr.header.start_offset as usize + resident.data_offset as usize;
-            entry
-                .data
-                .get(start..start + resident.data_size as usize)
-                .unwrap_or_default()
+            let start = resident.data_offset as usize;
+            &record[start..start + resident.data_size as usize]
         }
         ResidentialHeader::NonResident(_) => &[],
     }

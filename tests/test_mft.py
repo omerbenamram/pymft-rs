@@ -136,3 +136,27 @@ def test_index_root_entries(sample_mft: Path):
     assert first.flags == "INDEX_ENTRY_NODE"
     assert first.fname_info.name == "eventtriggers.exe"
     assert first.fname_info.parent_entry_id == 29
+
+
+def test_volume_attributes_give_raw_value(sample_mft: Path):
+    entry = entry_by_id(sample_mft, 3)
+
+    assert attribute_content(entry, 0x60).data == b""
+    # 8 reserved bytes, then NTFS 3.1 and no volume flags.
+    assert attribute_content(entry, 0x70).data == b"\x00" * 8 + b"\x03\x01\x00\x00"
+
+
+def test_named_resident_attribute_data(sample_mft: Path):
+    entry = entry_by_id(sample_mft, 9)
+    sdh = next(a for a in entry.attributes() if a.type_code == 0xB0 and a.name == "$SDH")
+
+    assert sdh.attribute_content.data == b"\x03" + b"\x00" * 7
+
+
+def test_attribute_list_entries(sample_mft: Path):
+    content = attribute_content(entry_by_id(sample_mft, 3498), 0x20)
+
+    entries = [(e.attribute_type, e.lowest_vcn, e.name) for e in content.entries()]
+    assert entries == [(0x10, 0, ""), (0x30, 0, ""), (0x80, 0, "")]
+    # The entries can be iterated again.
+    assert len(list(content.entries())) == 3
