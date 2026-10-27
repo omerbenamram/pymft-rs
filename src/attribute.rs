@@ -1,24 +1,30 @@
+use std::sync::Arc;
+
+use jiff::Timestamp;
 use mft_rs::attribute::MftAttributeContent;
 use mft_rs::attribute::data_run::{DataRun, RunType};
-use mft_rs::attribute::header::ResidentialHeader;
+use mft_rs::attribute::header::{MftAttributeHeader, ResidentialHeader};
 use mft_rs::attribute::non_resident_attr::NonResidentAttr;
-use mft_rs::attribute::raw::RawAttribute;
 use mft_rs::attribute::x40::ObjectIdAttr;
-use mft_rs::attribute::x80::DataAttr;
 use mft_rs::attribute::x90::{IndexEntryHeader, IndexRootAttr, IndexRootFlags};
-use mft_rs::{FileNameAttr, MftAttribute, StandardInfoAttr};
+use mft_rs::{FileNameAttr, MftEntry, StandardInfoAttr};
 
 use num_traits::cast::ToPrimitive;
 
+use mft_rs::attribute::FileAttributeFlags;
 use mft_rs::attribute::x20::{AttributeListAttr, AttributeListEntry};
 use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
 
+use crate::err::PyMftError;
 use crate::utils::{date_to_pyobject, flags_to_string};
 
 #[pyclass(module = "mft")]
 pub struct PyMftAttribute {
-    inner: MftAttribute,
+    /// Attributes borrow from their entry's record, so keep the entry and where the attribute's
+    /// record is in it, and re-parse the content when it is asked for.
+    entry: Arc<MftEntry>,
+    start_offset: usize,
     /// Hex value of attribute type
     #[pyo3(get)]
     pub type_code: u32,
@@ -37,22 +43,22 @@ pub struct PyMftAttribute {
 }
 
 impl PyMftAttribute {
-    pub fn from_mft_attribute(py: Python, attr: MftAttribute) -> PyResult<Py<Self>> {
+    pub fn from_header(
+        py: Python,
+        entry: &Arc<MftEntry>,
+        header: &MftAttributeHeader,
+    ) -> PyResult<Py<Self>> {
         Py::new(
             py,
             PyMftAttribute {
-                type_name: format!("{:?}", attr.header.type_code),
-                type_code: attr.header.type_code.to_u32().unwrap(),
-                name: attr.header.name.clone(),
-                data_flags: flags_to_string(&attr.header.data_flags),
-                is_resident: {
-                    matches!(
-                        attr.header.residential_header,
-                        ResidentialHeader::Resident(_)
-                    )
-                },
-                data_size: attr.header.record_length,
-                inner: attr,
+                type_name: format!("{:?}", header.type_code),
+                type_code: header.type_code.to_u32().unwrap(),
+                name: header.name.to_utf8_string(),
+                data_flags: flags_to_string(&header.data_flags),
+                is_resident: matches!(header.residential_header, ResidentialHeader::Resident(_)),
+                data_size: header.record_length,
+                entry: Arc::clone(entry),
+                start_offset: header.start_offset as usize,
             },
         )
     }
@@ -69,37 +75,53 @@ impl PyMftAttribute {
     /// - `PyMftAttributeX90`
     /// - `PyMftAttributeNonResident` (if attribute content is non-resident)
     /// - `PyMftAttributeOther` (Currently unparsed in rust)
-    /// - `None` (if the attribute has no content)
     #[getter]
     pub fn attribute_content(&self) -> PyResult<Py<PyAny>> {
+        // `PyMftEntry::attributes` already parsed this record's header, so it is in bounds.
+        let record = &self.entry.data[self.start_offset..][..self.data_size as usize];
+        let header = MftAttributeHeader::from_slice(record, self.start_offset as u64)
+            .map_err(PyMftError)?
+            .expect("an $END marker is not an attribute");
+        let content = MftAttributeContent::from_record(record, &header).map_err(PyMftError)?;
+
         Python::attach(|py| {
-            Ok(match &self.inner.data {
+            Ok(match &content {
                 MftAttributeContent::AttrX10(info) => {
                     PyMftAttributeX10::from_x10(py, info.clone())?.into_py_any(py)?
                 }
                 MftAttributeContent::AttrX20(info) => {
-                    PyMftAttributeX20::from_x20(py, info.clone())?.into_py_any(py)?
+                    PyMftAttributeX20::from_x20(py, info)?.into_py_any(py)?
                 }
                 MftAttributeContent::AttrX30(info) => {
-                    PyMftAttributeX30::from_x30(py, info.clone())?.into_py_any(py)?
+                    PyMftAttributeX30::from_x30(py, info)?.into_py_any(py)?
                 }
                 MftAttributeContent::AttrX40(info) => {
                     PyMftAttributeX40::from_x40(py, info.clone())?.into_py_any(py)?
                 }
                 MftAttributeContent::AttrX80(info) => {
-                    PyMftAttributeX80::from_x80(py, info.clone())?.into_py_any(py)?
+                    PyMftAttributeX80::from_data(py, info.data())?.into_py_any(py)?
                 }
                 MftAttributeContent::AttrX90(info) => {
                     PyMftAttributeX90::from_x90(py, info)?.into_py_any(py)?
                 }
                 MftAttributeContent::Raw(raw) => {
-                    PyMftAttributeOther::from_raw(py, raw.clone())?.into_py_any(py)?
+                    PyMftAttributeOther::from_data(py, raw.data)?.into_py_any(py)?
+                }
+                // Not exposed as their own classes (yet): give their raw value, as before mft
+                // parsed them.
+                MftAttributeContent::AttrX60(_)
+                | MftAttributeContent::AttrX70(_)
+                | MftAttributeContent::AttrXC0(_) => {
+                    let ResidentialHeader::Resident(resident) = &header.residential_header else {
+                        unreachable!("only resident attributes have parsed content");
+                    };
+                    let value = resident.value(record).map_err(PyMftError)?;
+                    PyMftAttributeOther::from_data(py, value)?.into_py_any(py)?
                 }
                 // Non-resident attribute: the content lives in clusters elsewhere on the volume.
                 MftAttributeContent::DataRun(info) => {
                     PyMftAttributeNonResident::from_non_resident(py, info)?.into_py_any(py)?
                 }
-                MftAttributeContent::None => py.None(),
             })
         })
     }
@@ -185,7 +207,7 @@ impl PyMftAttributeX20Entry {
             PyMftAttributeX20Entry {
                 attribute_type: attr.attribute_type,
                 lowest_vcn: attr.lowest_vcn,
-                name: attr.name.clone(),
+                name: attr.name.to_utf8_string(),
             },
         )
     }
@@ -193,7 +215,7 @@ impl PyMftAttributeX20Entry {
 
 #[pyclass(module = "mft")]
 pub struct PyMftAttributeX20 {
-    inner: AttributeListAttr,
+    entries: Vec<Py<PyAny>>,
 }
 
 #[pyclass(module = "mft")]
@@ -220,8 +242,13 @@ impl PyMftX20EntriesIter {
 }
 
 impl PyMftAttributeX20 {
-    pub fn from_x20(py: Python, attr: AttributeListAttr) -> PyResult<Py<Self>> {
-        Py::new(py, PyMftAttributeX20 { inner: attr })
+    pub fn from_x20(py: Python, attr: &AttributeListAttr) -> PyResult<Py<Self>> {
+        let entries = attr
+            .entries
+            .iter()
+            .map(|entry| PyMftAttributeX20Entry::from_x20_entry(py, entry)?.into_py_any(py))
+            .collect::<PyResult<_>>()?;
+        Py::new(py, PyMftAttributeX20 { entries })
     }
 }
 
@@ -229,17 +256,11 @@ impl PyMftAttributeX20 {
 impl PyMftAttributeX20 {
     pub fn entries(&self) -> PyResult<Py<PyMftX20EntriesIter>> {
         Python::attach(|py| {
-            let mut attributes = vec![];
-
-            for entry in &self.inner.entries {
-                let obj = match PyMftAttributeX20Entry::from_x20_entry(py, entry)
-                    .and_then(|entry| entry.into_py_any(py))
-                {
-                    Ok(obj) => obj,
-                    Err(e) => e.into_py_any(py).unwrap(),
-                };
-                attributes.push(obj);
-            }
+            let attributes: Vec<Py<PyAny>> = self
+                .entries
+                .iter()
+                .map(|entry| entry.clone_ref(py))
+                .collect();
 
             Py::new(
                 py,
@@ -253,7 +274,11 @@ impl PyMftAttributeX20 {
 
 #[pyclass(module = "mft")]
 pub struct PyMftAttributeX30 {
-    inner: FileNameAttr,
+    created: Timestamp,
+    modified: Timestamp,
+    mft_modified: Timestamp,
+    accessed: Timestamp,
+    file_flags: FileAttributeFlags,
     #[pyo3(get)]
     pub parent_entry_id: u64,
     #[pyo3(get)]
@@ -271,18 +296,22 @@ pub struct PyMftAttributeX30 {
 }
 
 impl PyMftAttributeX30 {
-    pub fn from_x30(py: Python, attr: FileNameAttr) -> PyResult<Py<Self>> {
+    pub fn from_x30(py: Python, attr: &FileNameAttr) -> PyResult<Py<Self>> {
         Py::new(
             py,
             PyMftAttributeX30 {
+                created: attr.created,
+                modified: attr.modified,
+                mft_modified: attr.mft_modified,
+                accessed: attr.accessed,
+                file_flags: attr.flags.clone(),
                 logical_size: attr.logical_size,
                 physical_size: attr.physical_size,
                 reparse_value: attr.reparse_value,
                 namespace: format!("{:?}", attr.namespace),
                 parent_entry_id: attr.parent.entry,
                 parent_entry_sequence: attr.parent.sequence,
-                name: attr.name.clone(),
-                inner: attr,
+                name: attr.name.to_utf8_string(),
             },
         )
     }
@@ -292,27 +321,27 @@ impl PyMftAttributeX30 {
 impl PyMftAttributeX30 {
     #[getter]
     pub fn created(&self) -> PyResult<Py<PyAny>> {
-        date_to_pyobject(&self.inner.created)
+        date_to_pyobject(&self.created)
     }
 
     #[getter]
     pub fn modified(&self) -> PyResult<Py<PyAny>> {
-        date_to_pyobject(&self.inner.modified)
+        date_to_pyobject(&self.modified)
     }
 
     #[getter]
     pub fn mft_modified(&self) -> PyResult<Py<PyAny>> {
-        date_to_pyobject(&self.inner.mft_modified)
+        date_to_pyobject(&self.mft_modified)
     }
 
     #[getter]
     pub fn accessed(&self) -> PyResult<Py<PyAny>> {
-        date_to_pyobject(&self.inner.accessed)
+        date_to_pyobject(&self.accessed)
     }
 
     #[getter]
     pub fn flags(&self) -> PyResult<String> {
-        Ok(flags_to_string(&self.inner.flags))
+        Ok(flags_to_string(&self.file_flags))
     }
 }
 
@@ -360,12 +389,17 @@ impl PyMftAttributeX40 {
 
 #[pyclass(module = "mft")]
 pub struct PyMftAttributeX80 {
-    inner: DataAttr,
+    data: Vec<u8>,
 }
 
 impl PyMftAttributeX80 {
-    pub fn from_x80(py: Python, attr: DataAttr) -> PyResult<Py<Self>> {
-        Py::new(py, PyMftAttributeX80 { inner: attr })
+    pub fn from_data(py: Python, data: &[u8]) -> PyResult<Py<Self>> {
+        Py::new(
+            py,
+            PyMftAttributeX80 {
+                data: data.to_vec(),
+            },
+        )
     }
 }
 
@@ -373,7 +407,7 @@ impl PyMftAttributeX80 {
 impl PyMftAttributeX80 {
     #[getter]
     pub fn data(&self) -> &[u8] {
-        self.inner.data()
+        &self.data
     }
 }
 
@@ -470,7 +504,7 @@ impl PyMftIndexEntry {
                 index_record_length: entry.index_record_length,
                 attr_fname_length: entry.attr_fname_length,
                 flags: flags_to_string(&entry.flags),
-                fname_info: PyMftAttributeX30::from_x30(py, entry.fname_info.clone())?,
+                fname_info: PyMftAttributeX30::from_x30(py, &entry.fname_info)?,
             },
         )
     }
@@ -531,12 +565,17 @@ impl PyMftDataRun {
 
 #[pyclass(module = "mft")]
 pub struct PyMftAttributeOther {
-    inner: RawAttribute,
+    data: Vec<u8>,
 }
 
 impl PyMftAttributeOther {
-    pub fn from_raw(py: Python, attr: RawAttribute) -> PyResult<Py<Self>> {
-        Py::new(py, PyMftAttributeOther { inner: attr })
+    pub fn from_data(py: Python, data: &[u8]) -> PyResult<Py<Self>> {
+        Py::new(
+            py,
+            PyMftAttributeOther {
+                data: data.to_vec(),
+            },
+        )
     }
 }
 
@@ -544,6 +583,6 @@ impl PyMftAttributeOther {
 impl PyMftAttributeOther {
     #[getter]
     pub fn data(&self) -> &[u8] {
-        &self.inner.data
+        &self.data
     }
 }

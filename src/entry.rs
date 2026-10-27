@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::ReadSeek;
 use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
@@ -6,13 +8,12 @@ use crate::attribute::PyMftAttribute;
 use crate::err::PyMftError;
 use crate::utils::{flags_to_string, windows_path};
 use mft_rs::attribute::MftAttributeType;
-use mft_rs::attribute::header::ResidentialHeader;
 use mft_rs::{MftEntry, MftParser};
 
 #[pyclass(module = "mft")]
 pub struct PyMftEntry {
     // We need to keep inner entry to access it's attributes.
-    inner: MftEntry,
+    inner: Arc<MftEntry>,
     #[pyo3(get)]
     pub entry_id: u64,
     #[pyo3(get)]
@@ -41,14 +42,17 @@ impl PyMftEntry {
         Python::attach(|py| {
             let mut attributes = vec![];
 
-            for attribute_result in self.inner.iter_attributes() {
-                match attribute_result {
-                    Ok(attribute) => match PyMftAttribute::from_mft_attribute(py, attribute)
-                        .and_then(|entry| entry.into_py_any(py))
-                    {
-                        Ok(obj) => attributes.push(obj),
-                        Err(e) => attributes.push(e.into_py_any(py).unwrap()),
-                    },
+            // Only headers: content is parsed when `attribute_content` is read.
+            for record in self.inner.iter_attribute_records_matching(None) {
+                match record {
+                    Ok((header, _)) => {
+                        match PyMftAttribute::from_header(py, &self.inner, &header)
+                            .and_then(|entry| entry.into_py_any(py))
+                        {
+                            Ok(obj) => attributes.push(obj),
+                            Err(e) => attributes.push(e.into_py_any(py).unwrap()),
+                        }
+                    }
                     Err(e) => attributes.push(PyErr::from(PyMftError(e)).into_py_any(py).unwrap()),
                 }
             }
@@ -75,12 +79,9 @@ impl PyMftEntry {
             .map_or_else(|| "[UNKNOWN]".to_string(), |path| windows_path(&path));
 
         let file_size = entry
-            .iter_attributes_matching(Some(vec![MftAttributeType::DATA]))
+            .iter_attribute_records_matching(Some(vec![MftAttributeType::DATA]))
             .find_map(Result::ok)
-            .map_or(0, |attr| match &attr.header.residential_header {
-                ResidentialHeader::Resident(r) => u64::from(r.data_size),
-                ResidentialHeader::NonResident(nr) => nr.file_size,
-            });
+            .map_or(0, |(header, _)| header.value_size());
 
         Py::new(
             py,
@@ -93,7 +94,7 @@ impl PyMftEntry {
                 flags: flags_to_string(&entry.header.flags),
                 used_entry_size: entry.header.used_entry_size,
                 total_entry_size: entry.header.total_entry_size,
-                inner: entry,
+                inner: Arc::new(entry),
                 full_path,
                 file_size,
             },
