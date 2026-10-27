@@ -12,7 +12,7 @@ use mft_rs::attribute::x20::{AttributeListAttr, AttributeListEntry};
 use pyo3::prelude::*;
 use pyo3::IntoPyObjectExt;
 
-use crate::utils::date_to_pyobject;
+use crate::utils::{date_to_pyobject, flags_to_string};
 
 #[pyclass]
 pub struct PyMftAttribute {
@@ -42,7 +42,7 @@ impl PyMftAttribute {
                 type_name: format!("{:?}", &attr.header.type_code),
                 type_code: attr.header.type_code.to_u32().unwrap(),
                 name: attr.header.name.clone(),
-                data_flags: format!("{:?}", &attr.header.data_flags),
+                data_flags: flags_to_string(&attr.header.data_flags),
                 is_resident: {
                     matches!(
                         attr.header.residential_header,
@@ -159,7 +159,7 @@ impl PyMftAttributeX10 {
 
     #[getter]
     pub fn file_flags(&self) -> PyResult<String> {
-        Ok(format!("{:?}", self.inner.file_flags))
+        Ok(flags_to_string(&self.inner.file_flags))
     }
 }
 
@@ -307,7 +307,7 @@ impl PyMftAttributeX30 {
 
     #[getter]
     pub fn flags(&self) -> PyResult<String> {
-        Ok(format!("{:?}", self.inner.flags))
+        Ok(flags_to_string(&self.inner.flags))
     }
 }
 
