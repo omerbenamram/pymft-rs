@@ -411,6 +411,7 @@ dependencies = [
  "mft 0.7.0",
  "num-traits",
  "pyo3",
+ "pyo3-build-config",
  "pyo3-file",
  "sonic-rs",
 ]

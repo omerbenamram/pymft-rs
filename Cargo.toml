@@ -21,3 +21,6 @@ pyo3-file = "0.18.0"
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 sonic-rs = "0.5"
 csv = "1"
+
+[build-dependencies]
+pyo3-build-config = "0.30.1"
