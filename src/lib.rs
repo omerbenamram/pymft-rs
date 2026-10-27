@@ -15,17 +15,18 @@ use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read, Seek};
 
+use pyo3::IntoPyObjectExt;
 use pyo3::exceptions;
 use pyo3::prelude::*;
-use pyo3::IntoPyObjectExt;
 
 use crate::attribute::{
-    PyMftAttribute, PyMftAttributeOther, PyMftAttributeX10, PyMftAttributeX20, PyMftAttributeX30,
-    PyMftAttributeX40, PyMftAttributeX80, PyMftAttributeX90,
+    PyMftAttribute, PyMftAttributeOther, PyMftAttributeX10, PyMftAttributeX20,
+    PyMftAttributeX20Entry, PyMftAttributeX30, PyMftAttributeX40, PyMftAttributeX80,
+    PyMftAttributeX90, PyMftX20EntriesIter,
 };
 use crate::entry::PyMftAttributesIter;
 use crate::err::PyMftError;
-use crate::utils::{init_logging, FileOrFileLike};
+use crate::utils::{FileOrFileLike, init_logging};
 use csv::WriterBuilder;
 use pyo3::types::{PyBytes, PyString};
 
@@ -43,14 +44,14 @@ pub enum Output {
     JSON,
 }
 
-#[pyclass(unsendable)]
+#[pyclass(module = "mft")]
 /// PyMftParser(self, path_or_file_like, /)
 /// --
 ///
 /// Returns an instance of the parser.
 /// Works on both a path (string), or a file-like object.
 pub struct PyMftParser {
-    inner: Option<MftParser<Box<dyn ReadSeek + Send>>>,
+    inner: Option<MftParser<Box<dyn ReadSeek + Send + Sync>>>,
 }
 
 #[pymethods]
@@ -66,9 +67,12 @@ impl PyMftParser {
 
                 let reader = BufReader::with_capacity(4096, file);
 
-                (Box::new(reader) as Box<dyn ReadSeek + Send>, Some(size))
+                (
+                    Box::new(reader) as Box<dyn ReadSeek + Send + Sync>,
+                    Some(size),
+                )
             }
-            FileOrFileLike::FileLike(f) => (Box::new(f) as Box<dyn ReadSeek + Send>, None),
+            FileOrFileLike::FileLike(f) => (Box::new(f) as Box<dyn ReadSeek + Send + Sync>, None),
         };
 
         let parser = MftParser::from_read_seek(boxed_read_seek, size).map_err(PyMftError)?;
@@ -119,7 +123,9 @@ impl PyMftParser {
         slf.entries()
     }
     fn __next__(_slf: PyRefMut<Self>) -> PyResult<Option<Py<PyAny>>> {
-        Err(PyErr::new::<exceptions::PyNotImplementedError, _>("Using `next()` over `PyMftParser` is not supported. Try iterating over `PyMftParser(...).entries()`"))
+        Err(PyErr::new::<exceptions::PyNotImplementedError, _>(
+            "Using `next()` over `PyMftParser` is not supported. Try iterating over `PyMftParser(...).entries()`",
+        ))
     }
 }
 
@@ -151,9 +157,9 @@ impl PyMftParser {
     }
 }
 
-#[pyclass(unsendable)]
+#[pyclass(module = "mft")]
 pub struct PyMftEntriesIterator {
-    inner: MftParser<Box<dyn ReadSeek + Send>>,
+    inner: MftParser<Box<dyn ReadSeek + Send + Sync>>,
     total_number_of_records: u64,
     current_record: u64,
     output_format: Output,
@@ -225,7 +231,7 @@ impl PyMftEntriesIterator {
                             "CSV Serialization failed",
                         )
                         .into_py_any(py)
-                        .unwrap()
+                        .unwrap();
                     }
                 }
 
@@ -241,40 +247,42 @@ impl PyMftEntriesIterator {
     }
 
     fn next(&mut self) -> PyResult<Option<Py<PyAny>>> {
-        Python::attach(|py| loop {
-            if self.current_record == self.total_number_of_records {
-                return Ok(None);
-            }
-
-            let obj = match self.inner.get_entry(self.current_record) {
-                Ok(entry) => {
-                    if &entry.header.signature == ZERO_HEADER {
-                        self.current_record += 1;
-                        continue;
-                    }
-
-                    let ret = match self.output_format {
-                        Output::Python => self.entry_to_pyobject(Ok(entry), py),
-                        Output::JSON => self.entry_to_json(Ok(entry), py),
-                        Output::CSV => self.entry_to_csv(Ok(entry), py),
-                    };
-
-                    Ok(Some(ret))
+        Python::attach(|py| {
+            loop {
+                if self.current_record == self.total_number_of_records {
+                    return Ok(None);
                 }
-                Err(error) => Ok(Some(
-                    PyErr::from(PyMftError(error)).into_py_any(py).unwrap(),
-                )),
-            };
 
-            self.current_record += 1;
-            return obj;
+                let obj = match self.inner.get_entry(self.current_record) {
+                    Ok(entry) => {
+                        if &entry.header.signature == ZERO_HEADER {
+                            self.current_record += 1;
+                            continue;
+                        }
+
+                        let ret = match self.output_format {
+                            Output::Python => self.entry_to_pyobject(Ok(entry), py),
+                            Output::JSON => self.entry_to_json(Ok(entry), py),
+                            Output::CSV => self.entry_to_csv(Ok(entry), py),
+                        };
+
+                        Ok(Some(ret))
+                    }
+                    Err(error) => Ok(Some(
+                        PyErr::from(PyMftError(error)).into_py_any(py).unwrap(),
+                    )),
+                };
+
+                self.current_record += 1;
+                return obj;
+            }
         })
     }
 }
 
 // Don't use double quotes ("") inside this docstring, this will crash pyo3.
 /// Parses an mft file.
-#[pymodule]
+#[pymodule(gil_used = false)]
 fn mft(m: &Bound<'_, PyModule>) -> PyResult<()> {
     init_logging(m.py()).ok();
 
@@ -289,6 +297,8 @@ fn mft(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMftAttributesIter>()?;
     m.add_class::<PyMftAttributeX10>()?;
     m.add_class::<PyMftAttributeX20>()?;
+    m.add_class::<PyMftAttributeX20Entry>()?;
+    m.add_class::<PyMftX20EntriesIter>()?;
     m.add_class::<PyMftAttributeX30>()?;
     m.add_class::<PyMftAttributeX40>()?;
     m.add_class::<PyMftAttributeX80>()?;

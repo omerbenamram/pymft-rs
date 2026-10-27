@@ -1,20 +1,20 @@
+use mft_rs::attribute::MftAttributeContent;
 use mft_rs::attribute::header::ResidentialHeader;
 use mft_rs::attribute::raw::RawAttribute;
 use mft_rs::attribute::x40::ObjectIdAttr;
 use mft_rs::attribute::x80::DataAttr;
 use mft_rs::attribute::x90::IndexRootAttr;
-use mft_rs::attribute::MftAttributeContent;
 use mft_rs::{FileNameAttr, MftAttribute, StandardInfoAttr};
 
 use num_traits::cast::ToPrimitive;
 
 use mft_rs::attribute::x20::{AttributeListAttr, AttributeListEntry};
-use pyo3::prelude::*;
 use pyo3::IntoPyObjectExt;
+use pyo3::prelude::*;
 
 use crate::utils::{date_to_pyobject, flags_to_string};
 
-#[pyclass]
+#[pyclass(module = "mft")]
 pub struct PyMftAttribute {
     inner: MftAttribute,
     /// Hex value of attribute type
@@ -39,7 +39,7 @@ impl PyMftAttribute {
         Py::new(
             py,
             PyMftAttribute {
-                type_name: format!("{:?}", &attr.header.type_code),
+                type_name: format!("{:?}", attr.header.type_code),
                 type_code: attr.header.type_code.to_u32().unwrap(),
                 name: attr.header.name.clone(),
                 data_flags: flags_to_string(&attr.header.data_flags),
@@ -100,7 +100,7 @@ impl PyMftAttribute {
     }
 }
 
-#[pyclass]
+#[pyclass(module = "mft")]
 pub struct PyMftAttributeX10 {
     inner: StandardInfoAttr,
     #[pyo3(get)]
@@ -163,7 +163,7 @@ impl PyMftAttributeX10 {
     }
 }
 
-#[pyclass]
+#[pyclass(module = "mft")]
 pub struct PyMftAttributeX20Entry {
     #[pyo3(get)]
     pub attribute_type: u32,
@@ -186,14 +186,14 @@ impl PyMftAttributeX20Entry {
     }
 }
 
-#[pyclass]
+#[pyclass(module = "mft")]
 pub struct PyMftAttributeX20 {
     inner: AttributeListAttr,
 }
 
-#[pyclass(unsendable)]
+#[pyclass(module = "mft")]
 pub struct PyMftX20EntriesIter {
-    inner: Box<dyn Iterator<Item = Py<PyAny>> + Send>,
+    inner: Box<dyn Iterator<Item = Py<PyAny>> + Send + Sync>,
 }
 
 #[pymethods]
@@ -246,7 +246,7 @@ impl PyMftAttributeX20 {
     }
 }
 
-#[pyclass]
+#[pyclass(module = "mft")]
 pub struct PyMftAttributeX30 {
     inner: FileNameAttr,
     #[pyo3(get)]
@@ -273,7 +273,7 @@ impl PyMftAttributeX30 {
                 logical_size: attr.logical_size,
                 physical_size: attr.physical_size,
                 reparse_value: attr.reparse_value,
-                namespace: format!("{:?}", &attr.namespace),
+                namespace: format!("{:?}", attr.namespace),
                 parent_entry_id: attr.parent.entry,
                 parent_entry_sequence: attr.parent.sequence,
                 name: attr.name.clone(),
@@ -311,7 +311,7 @@ impl PyMftAttributeX30 {
     }
 }
 
-#[pyclass]
+#[pyclass(module = "mft")]
 pub struct PyMftAttributeX40 {
     #[pyo3(get)]
     /// Unique Id assigned to file
@@ -353,7 +353,7 @@ impl PyMftAttributeX40 {
     }
 }
 
-#[pyclass]
+#[pyclass(module = "mft")]
 pub struct PyMftAttributeX80 {
     inner: DataAttr,
 }
@@ -372,7 +372,7 @@ impl PyMftAttributeX80 {
     }
 }
 
-#[pyclass]
+#[pyclass(module = "mft")]
 pub struct PyMftAttributeX90 {
     #[pyo3(get)]
     /// Unique Id assigned to file
@@ -403,7 +403,7 @@ impl PyMftAttributeX90 {
     }
 }
 
-#[pyclass]
+#[pyclass(module = "mft")]
 pub struct PyMftAttributeOther {
     inner: RawAttribute,
 }

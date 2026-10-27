@@ -1,0 +1,3 @@
+# maturin wraps the extension as mft/__init__.py re-exporting mft.mft.
+mft.__all__
+mft.mft

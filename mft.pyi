@@ -1,112 +1,187 @@
-from typing import Any
+"""Python bindings for https://github.com/omerbenamram/mft."""
 
-class PyMftAttribute:
-    attribute_content: Any
-    data_flags: Any
-    data_size: Any
-    is_resident: Any
-    name: Any
-    type_code: Any
-    type_name: Any
-    @classmethod
-    def __init__(cls, *args, **kwargs) -> None: ...
+import datetime
+from typing import BinaryIO, TypeAlias, final
 
-class PyMftAttributeOther:
-    data: Any
-    @classmethod
-    def __init__(cls, *args, **kwargs) -> None: ...
+from typing_extensions import Self
 
-class PyMftAttributeX10:
-    accessed: Any
-    class_id: Any
-    created: Any
-    file_flags: Any
-    max_version: Any
-    mft_modified: Any
-    modified: Any
-    owner_id: Any
-    quota: Any
-    security_id: Any
-    usn: Any
-    version: Any
-    @classmethod
-    def __init__(cls, *args, **kwargs) -> None: ...
+# Iterators yield the error object instead of raising it, so iteration can continue
+# past a broken entry or attribute: `OSError` for I/O failures, `RuntimeError` otherwise.
+_ParseError: TypeAlias = RuntimeError | OSError
 
-class PyMftAttributeX20:
-    @classmethod
-    def __init__(cls, *args, **kwargs) -> None: ...
-    def entries(self, *args, **kwargs) -> Any: ...
-
-class PyMftAttributeX30:
-    accessed: Any
-    created: Any
-    flags: Any
-    logical_size: Any
-    mft_modified: Any
-    modified: Any
-    name: Any
-    namespace: Any
-    parent_entry_id: Any
-    parent_entry_sequence: Any
-    physical_size: Any
-    reparse_value: Any
-    @classmethod
-    def __init__(cls, *args, **kwargs) -> None: ...
-
-class PyMftAttributeX40:
-    birth_object_id: Any
-    birth_volume_id: Any
-    domain_id: Any
-    object_id: Any
-    @classmethod
-    def __init__(cls, *args, **kwargs) -> None: ...
-
-class PyMftAttributeX80:
-    data: Any
-    @classmethod
-    def __init__(cls, *args, **kwargs) -> None: ...
-
-class PyMftAttributeX90:
-    attribute_type: Any
-    collation_rule: Any
-    index_entry_number_of_cluster_blocks: Any
-    index_entry_size: Any
-    @classmethod
-    def __init__(cls, *args, **kwargs) -> None: ...
-
-class PyMftAttributesIter:
-    @classmethod
-    def __init__(cls, *args, **kwargs) -> None: ...
-    def __iter__(self) -> Any: ...
-    def __next__(self) -> Any: ...
-
-class PyMftEntriesIterator:
-    @classmethod
-    def __init__(cls, *args, **kwargs) -> None: ...
-    def __iter__(self) -> Any: ...
-    def __next__(self) -> Any: ...
-
-class PyMftEntry:
-    base_entry_id: Any
-    base_entry_sequence: Any
-    entry_id: Any
-    file_size: Any
-    flags: Any
-    full_path: Any
-    hard_link_count: Any
-    sequence: Any
-    total_entry_size: Any
-    used_entry_size: Any
-    @classmethod
-    def __init__(cls, *args, **kwargs) -> None: ...
-    def attributes(self, *args, **kwargs) -> Any: ...
-
+@final
 class PyMftParser:
-    @classmethod
-    def __init__(cls, *args, **kwargs) -> None: ...
-    def entries(self, *args, **kwargs) -> Any: ...
-    def entries_csv(self, *args, **kwargs) -> Any: ...
-    def entries_json(self, *args, **kwargs) -> Any: ...
-    def number_of_entries(self, *args, **kwargs) -> Any: ...
-    def __iter__(self) -> Any: ...
-    def __next__(self) -> Any: ...
+    """Returns an instance of the parser.
+
+    Works on both a path (string), or a file-like object opened in binary mode.
+    """
+
+    def __new__(cls, path_or_file_like: str | BinaryIO) -> Self: ...
+    def number_of_entries(self) -> int:
+        """Returns the total number of entries in the MFT."""
+
+    def entries(self) -> PyMftEntriesIterator:
+        """Returns an iterator that yields the mft entries as python objects."""
+
+    def entries_json(self) -> PyMftEntriesIterator:
+        """Returns an iterator that yields mft entries as JSON strings."""
+
+    def entries_csv(self) -> PyMftEntriesIterator:
+        """Returns an iterator that yields mft entries as CSV lines (bytes)."""
+
+    def __iter__(self) -> PyMftEntriesIterator: ...
+    def __next__(self) -> PyMftEntry | _ParseError: ...
+
+@final
+class PyMftEntriesIterator:
+    """Yields `PyMftEntry` objects from `entries()`, `str` from `entries_json()`,
+    `bytes` from `entries_csv()`, or a parse error in place of a broken entry.
+
+    A parser can only be iterated once.
+    """
+
+    def __iter__(self) -> Self: ...
+    def __next__(self) -> PyMftEntry | str | bytes | _ParseError: ...
+
+@final
+class PyMftEntry:
+    entry_id: int
+    sequence: int
+    base_entry_id: int
+    base_entry_sequence: int
+    hard_link_count: int
+    flags: str
+    used_entry_size: int
+    total_entry_size: int
+    full_path: str
+    file_size: int
+    def attributes(self) -> PyMftAttributesIter: ...
+
+@final
+class PyMftAttributesIter:
+    def __iter__(self) -> Self: ...
+    def __next__(self) -> PyMftAttribute | _ParseError: ...
+
+@final
+class PyMftAttribute:
+    type_code: int
+    """Numeric value of the attribute type."""
+    type_name: str
+    """Name of the attribute type."""
+    name: str
+    """Attribute name (can be empty)."""
+    data_flags: str
+    is_resident: bool
+    data_size: int
+    @property
+    def attribute_content(
+        self,
+    ) -> (
+        PyMftAttributeX10
+        | PyMftAttributeX20
+        | PyMftAttributeX30
+        | PyMftAttributeX40
+        | PyMftAttributeX80
+        | PyMftAttributeX90
+        | PyMftAttributeOther
+        | None
+    ):
+        """The parsed resident content, or `None` for a non-resident attribute."""
+
+@final
+class PyMftAttributeX10:
+    """$STANDARD_INFORMATION"""
+
+    max_version: int
+    version: int
+    class_id: int
+    owner_id: int
+    security_id: int
+    quota: int
+    usn: int
+    @property
+    def created(self) -> datetime.datetime: ...
+    @property
+    def modified(self) -> datetime.datetime: ...
+    @property
+    def mft_modified(self) -> datetime.datetime: ...
+    @property
+    def accessed(self) -> datetime.datetime: ...
+    @property
+    def file_flags(self) -> str: ...
+
+@final
+class PyMftAttributeX20:
+    """$ATTRIBUTE_LIST"""
+
+    def entries(self) -> PyMftX20EntriesIter: ...
+
+@final
+class PyMftX20EntriesIter:
+    def __iter__(self) -> Self: ...
+    def __next__(self) -> PyMftAttributeX20Entry | _ParseError: ...
+
+@final
+class PyMftAttributeX20Entry:
+    attribute_type: int
+    lowest_vcn: int
+    name: str
+
+@final
+class PyMftAttributeX30:
+    """$FILE_NAME"""
+
+    parent_entry_id: int
+    parent_entry_sequence: int
+    logical_size: int
+    physical_size: int
+    reparse_value: int
+    namespace: str
+    name: str
+    @property
+    def created(self) -> datetime.datetime: ...
+    @property
+    def modified(self) -> datetime.datetime: ...
+    @property
+    def mft_modified(self) -> datetime.datetime: ...
+    @property
+    def accessed(self) -> datetime.datetime: ...
+    @property
+    def flags(self) -> str: ...
+
+@final
+class PyMftAttributeX40:
+    """$OBJECT_ID"""
+
+    object_id: str
+    """Unique Id assigned to file."""
+    birth_volume_id: str
+    """Volume where file was created."""
+    birth_object_id: str
+    """Original Object Id of file."""
+    domain_id: str
+    """Domain in which object was created."""
+
+@final
+class PyMftAttributeX80:
+    """$DATA (resident)"""
+
+    @property
+    def data(self) -> bytes: ...
+
+@final
+class PyMftAttributeX90:
+    """$INDEX_ROOT"""
+
+    attribute_type: int
+    collation_rule: int
+    """Collation rule used to sort the index entries."""
+    index_entry_size: int
+    index_entry_number_of_cluster_blocks: int
+
+@final
+class PyMftAttributeOther:
+    """An attribute whose content is not parsed by the Rust library."""
+
+    @property
+    def data(self) -> bytes: ...

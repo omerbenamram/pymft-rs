@@ -2,55 +2,210 @@ name: CI
 
 on:
   push:
+    branches:
+      - master
+    tags:
+      - "v*"
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  cargo:
+  lint:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: cargo check
-        run: cargo check
-
-      - name: cargo check (abi3)
-        run: cargo check --features abi3
-
-  python:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          python-version: "3.12"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+      - name: Check type stubs against the built module
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -U "maturin>=1.15,<2.0" mypy typing_extensions
+          .venv/bin/maturin develop --locked
+          .venv/bin/python -m mypy.stubtest mft --allowlist tests/stubtest-allowlist.txt
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
+  linux:
+    runs-on: ubuntu-latest
+    env:
+      MFT_EXPECT_PYTHON: ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The build runs inside the manylinux container, so name its interpreters
+        # explicitly; setup-python only provides the host interpreter for tests.
+        include:
+          - python: "3.10"
+            interpreter: /opt/python/cp310-cp310/bin/python
+          - python: "3.14t"
+            interpreter: /opt/python/cp314-cp314t/bin/python
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: "v1.15.0"
+          manylinux: auto
+          docker-options: -e MFT_EXPECT_PYTHON
+          command: build
+          args: --release --locked -o dist --interpreter ${{ matrix.interpreter }}
+      - name: Verify wheel ABI
+        run: python scripts/check_wheel_abi.py "${{ matrix.python }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-linux-${{ matrix.python }}
+          path: dist
+      - run: pip install -U pytest
+      - run: pip install --no-index --find-links ./dist mft
+      - run: pytest
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+  linux-cross:
+    runs-on: ubuntu-latest
+    # --zig runs on the host, where setup-python selects the `python` executable.
+    # PyO3 0.30 strips a trailing 't' from PYO3_CROSS_PYTHON_VERSION into its
+    # free-threaded ABI flag (pyo3-build-config `CrossCompileEnvVars::parse_version`);
+    # without it a 3.14t leg builds the GIL ABI. build.rs fails the build if the
+    # configured ABI does not match MFT_EXPECT_PYTHON, so a misread flag cannot ship.
+    env:
+      PYO3_CROSS_PYTHON_VERSION: ${{ matrix.python }}
+      MFT_EXPECT_PYTHON: ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.14t"]
+        target:
+          - aarch64-unknown-linux-gnu
+          - aarch64-unknown-linux-musl
+          - x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: "v1.15.0"
+          command: build
+          args: --release --locked -o dist --interpreter python --zig --target ${{ matrix.target }}
+      - name: Verify wheel ABI
+        run: python scripts/check_wheel_abi.py "${{ matrix.python }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-${{ matrix.target }}-${{ matrix.python }}
+          path: dist
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+  windows:
+    runs-on: windows-latest
+    env:
+      MFT_EXPECT_PYTHON: ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.14t"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: "v1.15.0"
+          command: build
+          args: --release --locked -o dist --interpreter python
+      - name: Verify wheel ABI
+        run: python scripts/check_wheel_abi.py "${{ matrix.python }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-windows-${{ matrix.python }}
+          path: dist
+      - run: pip install -U pytest
+      - run: pip install --no-index --find-links ./dist mft
+      - run: pytest
 
-      - name: Create venv
-        run: uv venv .venv
+  macos:
+    runs-on: macos-15
+    # universal2 cross-compiles the x86_64 half; PyO3 needs the version (and
+    # the trailing 't', see linux-cross) since it cannot run that interpreter.
+    # build.rs checks both halves against MFT_EXPECT_PYTHON.
+    env:
+      PYO3_CROSS_PYTHON_VERSION: ${{ matrix.python }}
+      MFT_EXPECT_PYTHON: ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.14t"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: "v1.15.0"
+          command: build
+          # maturin v1 uses a synthetic target triple for universal2
+          args: --release --locked -o dist --interpreter python --target universal2-apple-darwin
+      - name: Verify wheel ABI
+        run: python scripts/check_wheel_abi.py "${{ matrix.python }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-macos-${{ matrix.python }}
+          path: dist
+      - run: pip install -U pytest
+      - run: pip install --no-index --find-links ./dist mft
+      - run: pytest
 
-      - name: Install build deps
-        run: uv pip install --python .venv/bin/python -U "maturin>=1.0,<2.0" pytest
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: "v1.15.0"
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sdist
+          path: dist
 
-      - name: Build + install (maturin)
-        run: .venv/bin/maturin develop --release --features abi3
-
-      - name: pytest
-        run: .venv/bin/python -m pytest -q
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [lint, linux, linux-cross, windows, macos, sdist]
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: astral-sh/setup-uv@v10
+      - name: Publish to PyPI
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: uv publish --check-url https://pypi.org/simple/ ./dist/*
