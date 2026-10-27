@@ -199,7 +199,7 @@ impl PyMftEntriesIterator {
         py: Python,
     ) -> Py<PyAny> {
         match entry_result {
-            Ok(entry) => match serde_json::to_string(&entry) {
+            Ok(entry) => match sonic_rs::to_string(&entry) {
                 Ok(s) => PyString::new(py, &s).into_any().unbind(),
                 Err(_e) => PyErr::new::<exceptions::PyRuntimeError, _>("JSON Serialization failed")
                     .into_py_any(py)
