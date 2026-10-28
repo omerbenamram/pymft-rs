@@ -57,6 +57,12 @@ def timestamp(value: str) -> datetime.datetime:
     return EPOCH + datetime.timedelta(microseconds=micros)
 
 
+def assert_fields(obj, data, *fields):
+    """Asserts each field of `obj` equals the JSON value of the same name."""
+    for field in fields:
+        assert getattr(obj, field) == data[field], field
+
+
 def check_times(content, data):
     for field in ("created", "modified", "mft_modified", "accessed"):
         assert getattr(content, field) == timestamp(data[field]), field
@@ -65,72 +71,73 @@ def check_times(content, data):
 def check_file_name(content, data):
     assert content.parent_entry_id == data["parent"]["entry"]
     assert content.parent_entry_sequence == data["parent"]["sequence"]
-    assert content.logical_size == data["logical_size"]
-    assert content.physical_size == data["physical_size"]
-    assert content.reparse_value == data["reparse_value"]
-    assert content.namespace == data["namespace"]
-    assert content.name == data["name"]
-    assert content.flags == data["flags"]
+    assert_fields(
+        content,
+        data,
+        "logical_size",
+        "physical_size",
+        "reparse_value",
+        "namespace",
+        "name",
+        "flags",
+    )
     check_times(content, data)
 
 
 def check_content(content, data, header):
     if isinstance(content, PyMftAttributeX10):
-        for field in ("max_version", "version", "class_id", "owner_id", "security_id"):
-            assert getattr(content, field) == data[field], field
-        assert content.quota == data["quota"]
-        assert content.usn == data["usn"]
-        assert content.file_flags == data["file_flags"]
+        assert_fields(
+            content,
+            data,
+            "max_version",
+            "version",
+            "class_id",
+            "owner_id",
+            "security_id",
+            "quota",
+            "usn",
+            "file_flags",
+        )
         check_times(content, data)
     elif isinstance(content, PyMftAttributeX20):
-        entries = list(content.entries())
-        assert len(entries) == len(data["entries"])
-        for entry, expected in zip(entries, data["entries"]):
-            assert entry.attribute_type == expected["attribute_type"]
-            assert entry.lowest_vcn == expected["lowest_vcn"]
-            assert entry.name == expected["name"]
+        for entry, expected in zip(content.entries(), data["entries"], strict=True):
+            assert_fields(entry, expected, "attribute_type", "lowest_vcn", "name")
             assert entry.segment_entry_id == expected["segment_reference"]["entry"]
             assert entry.segment_entry_sequence == expected["segment_reference"]["sequence"]
     elif isinstance(content, PyMftAttributeX30):
         check_file_name(content, data)
     elif isinstance(content, PyMftAttributeX40):
         assert content.object_id == data["object_id"]
+        # The bindings give a missing id as "" rather than None.
         for field in ("birth_volume_id", "birth_object_id", "domain_id"):
             assert getattr(content, field) == (data[field] or ""), field
     elif isinstance(content, PyMftAttributeX60):
-        assert content.name == data["name"]
+        assert_fields(content, data, "name")
     elif isinstance(content, PyMftAttributeX70):
-        assert content.major_version == data["major_version"]
-        assert content.minor_version == data["minor_version"]
-        assert content.flags == data["flags"]
+        assert_fields(content, data, "major_version", "minor_version", "flags")
     elif isinstance(content, PyMftAttributeX80):
         assert content.data == bytes.fromhex(data)
     elif isinstance(content, PyMftAttributeX90):
-        assert content.attribute_type == data["attribute_type"]
-        assert content.collation_rule == COLLATION_RULES[data["collation_rule"]]
-        for field in (
+        assert_fields(
+            content,
+            data,
+            "attribute_type",
             "index_entry_size",
             "index_entry_number_of_cluster_blocks",
             "relative_offset_to_index_node",
             "index_node_length",
             "index_node_allocation_length",
-        ):
-            assert getattr(content, field) == data[field], field
+        )
+        assert content.collation_rule == COLLATION_RULES[data["collation_rule"]]
         assert content.is_large_index == ("LARGE_INDEX" in data["index_root_flags"])
-        entries = content.index_entries()
         expected_entries = data["index_entries"]["index_entries"]
-        assert len(entries) == len(expected_entries)
-        for entry, expected in zip(entries, expected_entries):
+        for entry, expected in zip(content.index_entries(), expected_entries, strict=True):
             assert entry.mft_reference_entry_id == expected["mft_reference"]["entry"]
             assert entry.mft_reference_entry_sequence == expected["mft_reference"]["sequence"]
-            assert entry.index_record_length == expected["index_record_length"]
-            assert entry.attr_fname_length == expected["attr_fname_length"]
-            assert entry.flags == expected["flags"]
+            assert_fields(entry, expected, "index_record_length", "attr_fname_length", "flags")
             check_file_name(entry.fname_info, expected["fname_info"])
     elif isinstance(content, PyMftAttributeXC0):
-        assert content.tag == data["tag"]
-        assert content.tag_name == data["tag_name"]
-        assert content.guid == data["guid"]
+        assert_fields(content, data, "tag", "tag_name", "guid")
         reparse = data["data"]
         assert content.reparse_type == reparse["type"]
         for field in (
@@ -151,19 +158,17 @@ def check_content(content, data, header):
         sizes = header["residential_header"]
         assert content.vcn_first == sizes["vnc_first"]
         assert content.vcn_last == sizes["vnc_last"]
-        for field in (
+        assert_fields(
+            content,
+            sizes,
             "allocated_length",
             "file_size",
             "valid_data_length",
             "unit_compression_size",
             "total_allocated",
-        ):
-            assert getattr(content, field) == sizes[field], field
-        runs = content.data_runs()
-        assert len(runs) == len(data["data_runs"])
-        for run, expected in zip(runs, data["data_runs"]):
-            assert run.lcn_offset == expected["lcn_offset"]
-            assert run.lcn_length == expected["lcn_length"]
+        )
+        for run, expected in zip(content.data_runs(), data["data_runs"], strict=True):
+            assert_fields(run, expected, "lcn_offset", "lcn_length")
             assert run.is_sparse == (expected["run_type"] == "Sparse")
     elif isinstance(content, PyMftAttributeOther):
         assert content.data == bytes.fromhex(data["data"])
@@ -174,22 +179,28 @@ def check_content(content, data, header):
 def check_entry(entry, expected):
     header = expected["header"]
     assert entry.entry_id == header["record_number"]
-    assert entry.sequence == header["sequence"]
     assert entry.base_entry_id == header["base_reference"]["entry"]
     assert entry.base_entry_sequence == header["base_reference"]["sequence"]
-    assert entry.hard_link_count == header["hard_link_count"]
-    assert entry.flags == header["flags"]
     assert entry.lsn == header["metadata_transaction_journal"]
-    assert entry.used_entry_size == header["used_entry_size"]
-    assert entry.total_entry_size == header["total_entry_size"]
+    assert_fields(
+        entry,
+        header,
+        "sequence",
+        "hard_link_count",
+        "flags",
+        "used_entry_size",
+        "total_entry_size",
+    )
     assert entry.valid_fixup == expected["valid_fixup"]
     flag_names = set(header["flags"].split(" | "))
     assert entry.flags_value == sum(bit for name, bit in ENTRY_FLAGS.items() if name in flag_names)
     assert entry.is_allocated == ("ALLOCATED" in flag_names)
     assert entry.is_dir == ("INDEX_PRESENT" in flag_names)
-    data = [a["header"] for a in expected["attributes"] if a["header"]["type_code"] == "DATA"]
-    if data:
-        sizes = data[0]["residential_header"]
+    first_data = next(
+        (a["header"] for a in expected["attributes"] if a["header"]["type_code"] == "DATA"), None
+    )
+    if first_data is not None:
+        sizes = first_data["residential_header"]
         assert entry.file_size == sizes.get("data_size", sizes.get("file_size"))
 
     # Python returns every attribute header and parses the content when it's read, while the
@@ -205,14 +216,14 @@ def check_entry(entry, expected):
         except (RuntimeError, OSError):
             errors += 1
     assert errors == len(expected.get("errors", []))
-    assert len(parsed) == len(expected["attributes"])
 
-    for (attribute, content), expected_attribute in zip(parsed, expected["attributes"]):
+    for (attribute, content), expected_attribute in zip(
+        parsed, expected["attributes"], strict=True
+    ):
         attr_header = expected_attribute["header"]
         assert attribute.type_name == attr_header["type_code"]
-        assert attribute.name == attr_header["name"]
-        assert attribute.data_flags == attr_header["data_flags"]
         assert attribute.data_size == attr_header["record_length"]
+        assert_fields(attribute, attr_header, "name", "data_flags")
         assert attribute.is_resident == (attr_header["form_code"] == 0)
         if attribute.is_resident:
             raw_value = attribute.raw_value
