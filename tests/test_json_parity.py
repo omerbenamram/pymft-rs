@@ -1,5 +1,8 @@
-"""Checks every field the Python classes expose against the Rust library's JSON for the same
-entries, so a binding that reads the wrong field or converts it wrongly shows up here."""
+"""Checks the fields the Python classes expose against the Rust library's JSON for the same
+entries, so a binding that reads the wrong field or converts it wrongly shows up here.
+
+Not checked: `full_path` (the JSON has no path), and `type_code` and the integer `*_value` flag
+fields other than the entry's, which are built from the same values as the names checked here."""
 
 import datetime
 import json
@@ -25,6 +28,13 @@ from mft import (
 SAMPLES = Path(__file__).parent.parent / "samples"
 
 EPOCH = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
+
+ENTRY_FLAGS = {
+    "ALLOCATED": 0x01,
+    "INDEX_PRESENT": 0x02,
+    "IS_EXTENSION": 0x04,
+    "SPECIAL_INDEX_PRESENT": 0x08,
+}
 
 COLLATION_RULES = {
     "CollationBinary": 0x00,
@@ -84,7 +94,8 @@ def check_content(content, data, header):
     elif isinstance(content, PyMftAttributeX30):
         check_file_name(content, data)
     elif isinstance(content, PyMftAttributeX40):
-        for field in ("object_id", "birth_volume_id", "birth_object_id", "domain_id"):
+        assert content.object_id == data["object_id"]
+        for field in ("birth_volume_id", "birth_object_id", "domain_id"):
             assert getattr(content, field) == (data[field] or ""), field
     elif isinstance(content, PyMftAttributeX60):
         assert content.name == data["name"]
@@ -134,6 +145,8 @@ def check_content(content, data, header):
         assert content.is_relative == reparse.get("relative")
         if reparse["type"] == "Other":
             assert content.data == bytes.fromhex(reparse["data"])
+        else:
+            assert content.data is None
     elif isinstance(content, PyMftAttributeNonResident):
         sizes = header["residential_header"]
         assert content.vcn_first == sizes["vnc_first"]
@@ -170,14 +183,31 @@ def check_entry(entry, expected):
     assert entry.used_entry_size == header["used_entry_size"]
     assert entry.total_entry_size == header["total_entry_size"]
     assert entry.valid_fixup == expected["valid_fixup"]
+    flag_names = set(header["flags"].split(" | "))
+    assert entry.flags_value == sum(bit for name, bit in ENTRY_FLAGS.items() if name in flag_names)
+    assert entry.is_allocated == ("ALLOCATED" in flag_names)
+    assert entry.is_dir == ("INDEX_PRESENT" in flag_names)
+    data = [a["header"] for a in expected["attributes"] if a["header"]["type_code"] == "DATA"]
+    if data:
+        sizes = data[0]["residential_header"]
+        assert entry.file_size == sizes.get("data_size", sizes.get("file_size"))
 
-    attributes = list(entry.attributes())
-    errors = [a for a in attributes if isinstance(a, Exception)]
-    attributes = [a for a in attributes if not isinstance(a, Exception)]
-    assert len(errors) == len(expected.get("errors", []))
-    assert len(attributes) == len(expected["attributes"])
+    # Python returns every attribute header and parses the content when it's read, while the
+    # JSON lists an attribute whose content doesn't parse under `errors` instead.
+    errors = 0
+    parsed = []
+    for attribute in entry.attributes():
+        if isinstance(attribute, Exception):
+            errors += 1
+            continue
+        try:
+            parsed.append((attribute, attribute.attribute_content))
+        except (RuntimeError, OSError):
+            errors += 1
+    assert errors == len(expected.get("errors", []))
+    assert len(parsed) == len(expected["attributes"])
 
-    for attribute, expected_attribute in zip(attributes, expected["attributes"]):
+    for (attribute, content), expected_attribute in zip(parsed, expected["attributes"]):
         attr_header = expected_attribute["header"]
         assert attribute.type_name == attr_header["type_code"]
         assert attribute.name == attr_header["name"]
@@ -187,9 +217,11 @@ def check_entry(entry, expected):
         if attribute.is_resident:
             raw_value = attribute.raw_value
             assert len(raw_value) == attr_header["residential_header"]["data_size"]
+            if isinstance(content, (PyMftAttributeX80, PyMftAttributeOther)):
+                assert raw_value == content.data
         else:
             assert attribute.raw_value is None
-        check_content(attribute.attribute_content, expected_attribute["data"], attr_header)
+        check_content(content, expected_attribute["data"], attr_header)
 
 
 @pytest.mark.parametrize("sample", ["MFT", "reparse_points"])
