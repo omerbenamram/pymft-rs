@@ -26,6 +26,21 @@ pub struct PyMftEntry {
     pub hard_link_count: u16,
     #[pyo3(get)]
     pub flags: String,
+    /// `flags` as an integer.
+    #[pyo3(get)]
+    pub flags_value: u16,
+    #[pyo3(get)]
+    pub is_allocated: bool,
+    #[pyo3(get)]
+    pub is_dir: bool,
+    /// The $LogFile sequence number (LSN) of the last logged change to this record.
+    #[pyo3(get)]
+    pub lsn: u64,
+    /// Whether the update sequence (fixup) values matched at the end of every sector. `None`
+    /// when the record's signature isn't `FILE` (such as a `BAAD` record), so the fixups weren't
+    /// checked.
+    #[pyo3(get)]
+    pub valid_fixup: Option<bool>,
     #[pyo3(get)]
     pub used_entry_size: u32,
     #[pyo3(get)]
@@ -92,6 +107,11 @@ impl PyMftEntry {
                 base_entry_sequence: entry.header.base_reference.sequence,
                 hard_link_count: entry.header.hard_link_count,
                 flags: flags_to_string(&entry.header.flags),
+                flags_value: entry.header.flags.bits(),
+                is_allocated: entry.is_allocated(),
+                is_dir: entry.is_dir(),
+                lsn: entry.header.metadata_transaction_journal,
+                valid_fixup: entry.valid_fixup,
                 used_entry_size: entry.header.used_entry_size,
                 total_entry_size: entry.header.total_entry_size,
                 inner: Arc::new(entry),

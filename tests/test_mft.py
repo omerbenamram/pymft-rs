@@ -94,8 +94,12 @@ def entry_by_id(sample_mft: Path, entry_id: int) -> PyMftEntry:
     raise AssertionError(f"entry {entry_id} not found")
 
 
+def attribute(entry: PyMftEntry, type_code: int):
+    return next(a for a in entry.attributes() if a.type_code == type_code)
+
+
 def attribute_content(entry: PyMftEntry, type_code: int):
-    return next(a for a in entry.attributes() if a.type_code == type_code).attribute_content
+    return attribute(entry, type_code).attribute_content
 
 
 def test_full_path_uses_backslashes(sample_mft: Path):
@@ -139,12 +143,84 @@ def test_index_root_entries(sample_mft: Path):
     assert first.fname_info.parent_entry_id == 29
 
 
-def test_volume_attributes_give_raw_value(sample_mft: Path):
-    entry = entry_by_id(sample_mft, 3)
+def test_volume_attributes(sample_mft: Path):
+    entry = PyMftParser(str(sample_mft)).get_entry(3)
 
-    assert attribute_content(entry, 0x60).data == b""
+    assert attribute_content(entry, 0x60).name == ""
+    info = attribute_content(entry, 0x70)
+    assert (info.major_version, info.minor_version) == (3, 1)
+    assert info.flags == "(empty)"
+    assert info.flags_value == 0
     # 8 reserved bytes, then NTFS 3.1 and no volume flags.
-    assert attribute_content(entry, 0x70).data == b"\x00" * 8 + b"\x03\x01\x00\x00"
+    assert attribute(entry, 0x70).raw_value == b"\x00" * 8 + b"\x03\x01\x00\x00"
+    # Non-resident $DATA has no resident value.
+    assert attribute(PyMftParser(str(sample_mft)).get_entry(0), 0x80).raw_value is None
+
+
+def test_reparse_points():
+    # Four records from the Narcos Windows 10 $MFT (Digital Corpora, CC0): entries 27557,
+    # 28654, 84786 and 22487.
+    path = Path(__file__).parent.parent / "samples" / "reparse_points"
+    junction, symlink, app_exec_link, wci = (
+        attribute_content(entry, 0xC0) for entry in PyMftParser(str(path)).entries()
+    )
+
+    # `Users\Default User`
+    assert (junction.tag, junction.tag_name, junction.reparse_type) == (
+        0xA0000003,
+        "MOUNT_POINT",
+        "MountPoint",
+    )
+    assert junction.substitute_name == "\\??\\C:\\Users\\Default"
+    assert junction.print_name == "C:\\Users\\Default"
+    assert junction.is_relative is None
+    assert junction.data is None
+
+    # `Users\All Users`
+    assert symlink.reparse_type == "SymbolicLink"
+    assert symlink.print_name == "C:\\ProgramData"
+    assert symlink.is_relative is False
+
+    # `WindowsApps\MicrosoftEdge.exe`
+    assert app_exec_link.reparse_type == "AppExecLink"
+    assert app_exec_link.package_id == "Microsoft.MicrosoftEdge_8wekyb3d8bbwe"
+    assert app_exec_link.app_user_model_id == "Microsoft.MicrosoftEdge_8wekyb3d8bbwe!MicrosoftEdge"
+    assert app_exec_link.target_path == "C:\\Windows\\System32\\SystemUWPLauncher.exe"
+    assert app_exec_link.substitute_name is None
+
+    # A Windows Container Isolation placeholder: a documented tag with no decoder.
+    assert (wci.tag_name, wci.reparse_type, wci.guid) == ("WCI", "Other", None)
+    assert wci.data == bytes.fromhex("01000000000000007a04b779e4f5ef428db10e504254f2c90000")
+
+
+def test_entry_header_extras(sample_mft: Path):
+    parser = PyMftParser(str(sample_mft))
+
+    mft = parser.get_entry(0)
+    assert (mft.flags_value, mft.is_allocated, mft.is_dir) == (1, True, False)
+    assert mft.lsn == 77648146
+    assert mft.valid_fixup is True
+
+    root = parser.get_entry(5)
+    assert (root.flags_value, root.is_dir) == (3, True)
+
+
+def test_flag_values(sample_mft: Path):
+    entry = PyMftParser(str(sample_mft)).get_entry(0)
+    attribute = next(entry.attributes())
+    assert attribute.data_flags_value == 0
+    # FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM
+    assert attribute.attribute_content.file_flags_value == 0x6
+    assert attribute_content(entry, 0x30).flags_value == 0x6
+
+
+def test_non_resident_sizes(sample_mft: Path):
+    data = attribute_content(PyMftParser(str(sample_mft)).get_entry(0), 0x80)
+
+    assert (data.vcn_first, data.vcn_last) == (0, 6543)
+    assert data.allocated_length == data.file_size == data.valid_data_length == 13402112
+    assert data.unit_compression_size == 0
+    assert data.total_allocated is None
 
 
 def test_named_resident_attribute_data(sample_mft: Path):
@@ -159,6 +235,9 @@ def test_attribute_list_entries(sample_mft: Path):
 
     entries = [(e.attribute_type, e.lowest_vcn, e.name) for e in content.entries()]
     assert entries == [(0x10, 0, ""), (0x30, 0, ""), (0x80, 0, "")]
+    # $DATA lives in extension record 4711.
+    segments = [(e.segment_entry_id, e.segment_entry_sequence) for e in content.entries()]
+    assert segments == [(3498, 1), (3498, 1), (4711, 2)]
     # The entries can be iterated again.
     assert len(list(content.entries())) == 3
 
