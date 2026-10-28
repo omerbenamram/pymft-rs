@@ -13,9 +13,26 @@ and this project adheres to
 - `PyMftParser.get_entry(entry_id)` reads one entry by number, with its `full_path`. It returns
   `None` for a record that is all zeroes (an entry `entries()` skips) and raises `IndexError`
   for a negative number or one past the last entry.
+- `$VOLUME_NAME`, `$VOLUME_INFORMATION` and `$REPARSE_POINT` have their own content classes:
+  `PyMftAttributeX60` (`name`), `PyMftAttributeX70` (`major_version`, `minor_version`, `flags`)
+  and `PyMftAttributeXC0` (the tag and its name, a third-party tag's GUID, and the decoded
+  target of symlinks, junctions and mount points, app execution aliases and WSL symlinks; other
+  tags keep their `data`).
+- `PyMftEntry` has `lsn` (the $LogFile sequence number), `is_allocated`, `is_dir` and
+  `valid_fixup`.
+- Flags are also available as integers: `PyMftEntry.flags_value`,
+  `PyMftAttribute.data_flags_value`, `PyMftAttributeX10.file_flags_value` and
+  `PyMftAttributeX30.flags_value`.
+- `PyMftAttributeNonResident` has the attribute's sizes (`allocated_length`, `file_size`,
+  `valid_data_length`, `total_allocated`), the VCN range it covers and `unit_compression_size`.
+- `PyMftAttributeX20Entry` has the extension record that holds each attribute
+  (`segment_entry_id`, `segment_entry_sequence`).
 
 ### Changed
 
+- **Breaking:** `attribute_content` of `$VOLUME_NAME`, `$VOLUME_INFORMATION` and
+  `$REPARSE_POINT` is now `PyMftAttributeX60`, `PyMftAttributeX70` or `PyMftAttributeXC0`
+  instead of `PyMftAttributeOther`. A value too short to parse is still `PyMftAttributeOther`.
 - A `PyMftParser` can be iterated any number of times, and `number_of_entries()` works after
   iterating. Before, a second `entries()`, `entries_json()` or `entries_csv()` raised
   `RuntimeError: PyMftParser can only be used once`. Iterators share the parser, including its

@@ -59,6 +59,15 @@ class PyMftEntry:
     base_entry_sequence: int
     hard_link_count: int
     flags: str
+    flags_value: int
+    """`flags` as an integer."""
+    is_allocated: bool
+    is_dir: bool
+    lsn: int
+    """The $LogFile sequence number (LSN) of the last logged change to this record."""
+    valid_fixup: bool | None
+    """Whether the update sequence (fixup) values matched at the end of every sector.
+    `None` when the record has no update sequence array."""
     used_entry_size: int
     total_entry_size: int
     full_path: str
@@ -79,6 +88,8 @@ class PyMftAttribute:
     name: str
     """Attribute name (can be empty)."""
     data_flags: str
+    data_flags_value: int
+    """`data_flags` as an integer."""
     is_resident: bool
     data_size: int
     @property
@@ -89,8 +100,11 @@ class PyMftAttribute:
         | PyMftAttributeX20
         | PyMftAttributeX30
         | PyMftAttributeX40
+        | PyMftAttributeX60
+        | PyMftAttributeX70
         | PyMftAttributeX80
         | PyMftAttributeX90
+        | PyMftAttributeXC0
         | PyMftAttributeNonResident
         | PyMftAttributeOther
     ):
@@ -118,6 +132,9 @@ class PyMftAttributeX10:
     def accessed(self) -> datetime.datetime: ...
     @property
     def file_flags(self) -> str: ...
+    @property
+    def file_flags_value(self) -> int:
+        """`file_flags` as an integer."""
 
 @final
 class PyMftAttributeX20:
@@ -135,6 +152,9 @@ class PyMftAttributeX20Entry:
     attribute_type: int
     lowest_vcn: int
     name: str
+    segment_entry_id: int
+    """The entry that holds the attribute: this entry, or one of its extension records."""
+    segment_entry_sequence: int
 
 @final
 class PyMftAttributeX30:
@@ -157,6 +177,9 @@ class PyMftAttributeX30:
     def accessed(self) -> datetime.datetime: ...
     @property
     def flags(self) -> str: ...
+    @property
+    def flags_value(self) -> int:
+        """`flags` as an integer."""
 
 @final
 class PyMftAttributeX40:
@@ -170,6 +193,22 @@ class PyMftAttributeX40:
     """Original Object Id of file."""
     domain_id: str
     """Domain in which object was created."""
+
+@final
+class PyMftAttributeX60:
+    """$VOLUME_NAME: the volume label."""
+
+    name: str
+
+@final
+class PyMftAttributeX70:
+    """$VOLUME_INFORMATION: the NTFS version and volume state flags."""
+
+    major_version: int
+    minor_version: int
+    flags: str
+    flags_value: int
+    """`flags` as an integer."""
 
 @final
 class PyMftAttributeX80:
@@ -209,9 +248,54 @@ class PyMftIndexEntry:
     """The copy of the file's `$FILE_NAME` attribute kept in the index."""
 
 @final
-class PyMftAttributeNonResident:
-    """The content of a non-resident attribute: the data runs that locate it on the volume."""
+class PyMftAttributeXC0:
+    """$REPARSE_POINT. `reparse_type` says which of the optional fields are set:
 
+    - `SymbolicLink`: `substitute_name`, `print_name` and `is_relative`
+    - `MountPoint` (a junction or volume mount point): `substitute_name` and `print_name`
+    - `AppExecLink`: `package_id`, `app_user_model_id` and `target_path`
+    - `LxSymlink` (a WSL symlink): `target`
+    - `Other` (any other tag, or data that doesn't match its tag): `data`
+    """
+
+    tag: int
+    """The reparse tag, which says which file system filter owns the data."""
+    tag_name: str | None
+    """The name of a documented tag, such as `SYMLINK`, without the `IO_REPARSE_TAG_`
+    prefix."""
+    guid: str | None
+    """The owning filter's GUID, for third-party tags."""
+    reparse_type: str
+    substitute_name: str | None
+    print_name: str | None
+    is_relative: bool | None
+    package_id: str | None
+    app_user_model_id: str | None
+    target_path: str | None
+    target: str | None
+    @property
+    def data(self) -> bytes | None:
+        """The raw data of an `Other` reparse point."""
+
+@final
+class PyMftAttributeNonResident:
+    """The content of a non-resident attribute: its sizes, and the data runs that locate it
+    on the volume. The sizes are only valid in the attribute record whose `vcn_first` is 0."""
+
+    vcn_first: int
+    """The first virtual cluster number (VCN) this attribute record covers."""
+    vcn_last: int
+    """The last VCN this attribute record covers."""
+    allocated_length: int
+    """Allocated size in bytes, a multiple of the cluster size."""
+    file_size: int
+    """Real size in bytes."""
+    valid_data_length: int
+    """Initialized size in bytes. Reads past it return zeroes."""
+    unit_compression_size: int
+    """Compression unit size, as a power of two in clusters (0 if not compressed)."""
+    total_allocated: int | None
+    """Bytes actually allocated on disk. Only stored for compressed attributes."""
     def data_runs(self) -> list[PyMftDataRun]: ...
 
 @final

@@ -3,10 +3,14 @@ use std::sync::Arc;
 use jiff::Timestamp;
 use mft_rs::attribute::MftAttributeContent;
 use mft_rs::attribute::data_run::{DataRun, RunType};
+use mft_rs::attribute::header::NonResidentHeader;
 use mft_rs::attribute::header::{MftAttributeHeader, ResidentialHeader};
 use mft_rs::attribute::non_resident_attr::NonResidentAttr;
 use mft_rs::attribute::x40::ObjectIdAttr;
+use mft_rs::attribute::x60::VolumeNameAttr;
+use mft_rs::attribute::x70::VolumeInformationAttr;
 use mft_rs::attribute::x90::{IndexEntryHeader, IndexRootAttr, IndexRootFlags};
+use mft_rs::attribute::xc0::{ReparseData, ReparsePointAttr};
 use mft_rs::{FileNameAttr, MftEntry, StandardInfoAttr};
 
 use num_traits::cast::ToPrimitive;
@@ -36,6 +40,9 @@ pub struct PyMftAttribute {
     pub name: String,
     #[pyo3(get)]
     pub data_flags: String,
+    /// `data_flags` as an integer.
+    #[pyo3(get)]
+    pub data_flags_value: u16,
     #[pyo3(get)]
     pub is_resident: bool,
     #[pyo3(get)]
@@ -55,6 +62,7 @@ impl PyMftAttribute {
                 type_code: header.type_code.to_u32().unwrap(),
                 name: header.name.to_utf8_string(),
                 data_flags: flags_to_string(&header.data_flags),
+                data_flags_value: header.data_flags.bits(),
                 is_resident: matches!(header.residential_header, ResidentialHeader::Resident(_)),
                 data_size: header.record_length,
                 entry: Arc::clone(entry),
@@ -71,8 +79,11 @@ impl PyMftAttribute {
     /// - `PyMftAttributeX20`
     /// - `PyMftAttributeX30`
     /// - `PyMftAttributeX40`
+    /// - `PyMftAttributeX60`
+    /// - `PyMftAttributeX70`
     /// - `PyMftAttributeX80`
     /// - `PyMftAttributeX90`
+    /// - `PyMftAttributeXC0`
     /// - `PyMftAttributeNonResident` (if attribute content is non-resident)
     /// - `PyMftAttributeOther` (Currently unparsed in rust)
     #[getter]
@@ -107,20 +118,23 @@ impl PyMftAttribute {
                 MftAttributeContent::Raw(raw) => {
                     PyMftAttributeOther::from_data(py, raw.data)?.into_py_any(py)?
                 }
-                // Not exposed as their own classes (yet): give their raw value, as before mft
-                // parsed them.
-                MftAttributeContent::AttrX60(_)
-                | MftAttributeContent::AttrX70(_)
-                | MftAttributeContent::AttrXC0(_) => {
-                    let ResidentialHeader::Resident(resident) = &header.residential_header else {
-                        unreachable!("only resident attributes have parsed content");
-                    };
-                    let value = resident.value(record).map_err(PyMftError)?;
-                    PyMftAttributeOther::from_data(py, value)?.into_py_any(py)?
+                MftAttributeContent::AttrX60(info) => {
+                    PyMftAttributeX60::from_x60(py, info)?.into_py_any(py)?
+                }
+                MftAttributeContent::AttrX70(info) => {
+                    PyMftAttributeX70::from_x70(py, info)?.into_py_any(py)?
+                }
+                MftAttributeContent::AttrXC0(info) => {
+                    PyMftAttributeXC0::from_xc0(py, info)?.into_py_any(py)?
                 }
                 // Non-resident attribute: the content lives in clusters elsewhere on the volume.
                 MftAttributeContent::DataRun(info) => {
-                    PyMftAttributeNonResident::from_non_resident(py, info)?.into_py_any(py)?
+                    let ResidentialHeader::NonResident(non_resident) = &header.residential_header
+                    else {
+                        unreachable!("only non-resident attributes have data runs");
+                    };
+                    PyMftAttributeNonResident::from_non_resident(py, non_resident, info)?
+                        .into_py_any(py)?
                 }
             })
         })
@@ -188,6 +202,12 @@ impl PyMftAttributeX10 {
     pub fn file_flags(&self) -> PyResult<String> {
         Ok(flags_to_string(&self.inner.file_flags))
     }
+
+    /// `file_flags` as an integer.
+    #[getter]
+    pub fn file_flags_value(&self) -> u32 {
+        self.inner.file_flags.bits()
+    }
 }
 
 #[pyclass(module = "mft")]
@@ -198,6 +218,11 @@ pub struct PyMftAttributeX20Entry {
     pub lowest_vcn: u64,
     #[pyo3(get)]
     pub name: String,
+    /// The entry that holds the attribute: this entry, or one of its extension records.
+    #[pyo3(get)]
+    pub segment_entry_id: u64,
+    #[pyo3(get)]
+    pub segment_entry_sequence: u16,
 }
 
 impl PyMftAttributeX20Entry {
@@ -208,6 +233,8 @@ impl PyMftAttributeX20Entry {
                 attribute_type: attr.attribute_type,
                 lowest_vcn: attr.lowest_vcn,
                 name: attr.name.to_utf8_string(),
+                segment_entry_id: attr.segment_reference.entry,
+                segment_entry_sequence: attr.segment_reference.sequence,
             },
         )
     }
@@ -342,6 +369,12 @@ impl PyMftAttributeX30 {
     #[getter]
     pub fn flags(&self) -> PyResult<String> {
         Ok(flags_to_string(&self.file_flags))
+    }
+
+    /// `flags` as an integer.
+    #[getter]
+    pub fn flags_value(&self) -> u32 {
+        self.file_flags.bits()
     }
 }
 
@@ -510,18 +543,51 @@ impl PyMftIndexEntry {
     }
 }
 
-/// The content of a non-resident attribute: the data runs that locate it on the volume.
+/// The content of a non-resident attribute: its sizes, and the data runs that locate it on the
+/// volume. The sizes are only valid in the attribute record whose `vcn_first` is 0.
 #[pyclass(module = "mft")]
 pub struct PyMftAttributeNonResident {
     inner: NonResidentAttr,
+    /// The first virtual cluster number (VCN) this attribute record covers.
+    #[pyo3(get)]
+    pub vcn_first: u64,
+    /// The last VCN this attribute record covers.
+    #[pyo3(get)]
+    pub vcn_last: u64,
+    /// Allocated size in bytes, a multiple of the cluster size.
+    #[pyo3(get)]
+    pub allocated_length: u64,
+    /// Real size in bytes.
+    #[pyo3(get)]
+    pub file_size: u64,
+    /// Initialized size in bytes. Reads past it return zeroes.
+    #[pyo3(get)]
+    pub valid_data_length: u64,
+    /// Compression unit size, as a power of two in clusters (0 if not compressed).
+    #[pyo3(get)]
+    pub unit_compression_size: u16,
+    /// Bytes actually allocated on disk. Only stored for compressed attributes.
+    #[pyo3(get)]
+    pub total_allocated: Option<u64>,
 }
 
 impl PyMftAttributeNonResident {
-    pub fn from_non_resident(py: Python, attr: &NonResidentAttr) -> PyResult<Py<Self>> {
+    pub fn from_non_resident(
+        py: Python,
+        header: &NonResidentHeader,
+        attr: &NonResidentAttr,
+    ) -> PyResult<Py<Self>> {
         Py::new(
             py,
             PyMftAttributeNonResident {
                 inner: attr.clone(),
+                vcn_first: header.vnc_first,
+                vcn_last: header.vnc_last,
+                allocated_length: header.allocated_length,
+                file_size: header.file_size,
+                valid_data_length: header.valid_data_length,
+                unit_compression_size: header.unit_compression_size,
+                total_allocated: header.total_allocated,
             },
         )
     }
@@ -560,6 +626,152 @@ impl PyMftDataRun {
                 is_sparse: run.run_type == RunType::Sparse,
             },
         )
+    }
+}
+
+/// $VOLUME_NAME: the volume label.
+#[pyclass(module = "mft")]
+pub struct PyMftAttributeX60 {
+    #[pyo3(get)]
+    pub name: String,
+}
+
+impl PyMftAttributeX60 {
+    pub fn from_x60(py: Python, attr: &VolumeNameAttr) -> PyResult<Py<Self>> {
+        Py::new(
+            py,
+            PyMftAttributeX60 {
+                name: attr.name.to_utf8_string(),
+            },
+        )
+    }
+}
+
+/// $VOLUME_INFORMATION: the NTFS version and volume state flags.
+#[pyclass(module = "mft")]
+pub struct PyMftAttributeX70 {
+    #[pyo3(get)]
+    pub major_version: u8,
+    #[pyo3(get)]
+    pub minor_version: u8,
+    #[pyo3(get)]
+    pub flags: String,
+    /// `flags` as an integer.
+    #[pyo3(get)]
+    pub flags_value: u16,
+}
+
+impl PyMftAttributeX70 {
+    pub fn from_x70(py: Python, attr: &VolumeInformationAttr) -> PyResult<Py<Self>> {
+        Py::new(
+            py,
+            PyMftAttributeX70 {
+                major_version: attr.major_version,
+                minor_version: attr.minor_version,
+                flags: flags_to_string(&attr.flags),
+                flags_value: attr.flags.bits(),
+            },
+        )
+    }
+}
+
+/// $REPARSE_POINT. `reparse_type` says which of the optional fields are set:
+/// - `SymbolicLink`: `substitute_name`, `print_name` and `is_relative`
+/// - `MountPoint` (a junction or volume mount point): `substitute_name` and `print_name`
+/// - `AppExecLink`: `package_id`, `app_user_model_id` and `target_path`
+/// - `LxSymlink` (a WSL symlink): `target`
+/// - `Other` (any other tag, or data that doesn't match its tag): `data`
+#[pyclass(module = "mft")]
+pub struct PyMftAttributeXC0 {
+    /// The reparse tag, which says which file system filter owns the data.
+    #[pyo3(get)]
+    pub tag: u32,
+    /// The name of a documented tag, such as `SYMLINK`, without the `IO_REPARSE_TAG_` prefix.
+    #[pyo3(get)]
+    pub tag_name: Option<&'static str>,
+    /// The owning filter's GUID, for third-party tags.
+    #[pyo3(get)]
+    pub guid: Option<String>,
+    #[pyo3(get)]
+    pub reparse_type: &'static str,
+    #[pyo3(get)]
+    pub substitute_name: Option<String>,
+    #[pyo3(get)]
+    pub print_name: Option<String>,
+    #[pyo3(get)]
+    pub is_relative: Option<bool>,
+    #[pyo3(get)]
+    pub package_id: Option<String>,
+    #[pyo3(get)]
+    pub app_user_model_id: Option<String>,
+    #[pyo3(get)]
+    pub target_path: Option<String>,
+    #[pyo3(get)]
+    pub target: Option<String>,
+    data: Option<Vec<u8>>,
+}
+
+impl PyMftAttributeXC0 {
+    pub fn from_xc0(py: Python, attr: &ReparsePointAttr) -> PyResult<Py<Self>> {
+        let mut xc0 = PyMftAttributeXC0 {
+            tag: attr.tag,
+            tag_name: attr.tag_name,
+            guid: attr.guid.as_ref().map(ToString::to_string),
+            reparse_type: "Other",
+            substitute_name: None,
+            print_name: None,
+            is_relative: None,
+            package_id: None,
+            app_user_model_id: None,
+            target_path: None,
+            target: None,
+            data: None,
+        };
+        match &attr.data {
+            ReparseData::SymbolicLink {
+                substitute_name,
+                print_name,
+                relative,
+            } => {
+                xc0.reparse_type = "SymbolicLink";
+                xc0.substitute_name = Some(substitute_name.to_utf8_string());
+                xc0.print_name = Some(print_name.to_utf8_string());
+                xc0.is_relative = Some(*relative);
+            }
+            ReparseData::MountPoint {
+                substitute_name,
+                print_name,
+            } => {
+                xc0.reparse_type = "MountPoint";
+                xc0.substitute_name = Some(substitute_name.to_utf8_string());
+                xc0.print_name = Some(print_name.to_utf8_string());
+            }
+            ReparseData::AppExecLink {
+                package_id,
+                app_user_model_id,
+                target_path,
+            } => {
+                xc0.reparse_type = "AppExecLink";
+                xc0.package_id = Some(package_id.to_utf8_string());
+                xc0.app_user_model_id = Some(app_user_model_id.to_utf8_string());
+                xc0.target_path = Some(target_path.to_utf8_string());
+            }
+            ReparseData::LxSymlink { target } => {
+                xc0.reparse_type = "LxSymlink";
+                xc0.target = Some(target.to_string());
+            }
+            ReparseData::Other { data } => xc0.data = Some(data.to_vec()),
+        }
+        Py::new(py, xc0)
+    }
+}
+
+#[pymethods]
+impl PyMftAttributeXC0 {
+    /// The raw data of an `Other` reparse point.
+    #[getter]
+    pub fn data(&self) -> Option<&[u8]> {
+        self.data.as_deref()
     }
 }
 
