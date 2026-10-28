@@ -25,7 +25,8 @@ class PyMftParser:
 
     def get_entry(self, entry_id: int) -> PyMftEntry | None:
         """Returns the entry with this number, or `None` if its record is all zeroes
-        (an entry `entries()` skips). Raises `IndexError` past the last entry."""
+        (an entry `entries()` skips). Raises `IndexError` for a negative number or one
+        past the last entry."""
 
     def entries(self) -> PyMftEntriesIterator:
         """Returns an iterator that yields the mft entries as python objects."""

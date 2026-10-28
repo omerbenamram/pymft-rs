@@ -12,7 +12,7 @@ and this project adheres to
 
 - `PyMftParser.get_entry(entry_id)` reads one entry by number, with its `full_path`. It returns
   `None` for a record that is all zeroes (an entry `entries()` skips) and raises `IndexError`
-  past the last entry.
+  for a negative number or one past the last entry.
 
 ### Changed
 

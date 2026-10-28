@@ -45,8 +45,10 @@ type SharedParser = Arc<Mutex<MftParser<Box<dyn ReadSeek + Send + Sync>>>>;
 /// Locks the parser shared by a `PyMftParser` and its iterators.
 ///
 /// The GIL is released while waiting, so a thread holding the lock can call back into Python (a
-/// file-like object's `read`) without deadlocking. A panic while the lock was held leaves the
-/// parser usable, since every read seeks to its entry first.
+/// file-like object's `read`) without deadlocking. The lock is not reentrant: Python code run
+/// while it is held (a file-like object's `read`, a `warnings` hook, a signal handler) must not
+/// call back into the same parser. A poisoned lock is recovered, since a panic can only happen
+/// after an entry's bytes were read.
 fn lock_parser<'a>(
     parser: &'a SharedParser,
     py: Python<'_>,
@@ -73,6 +75,8 @@ pub enum Output {
 /// `get_entry`, including while an iteration is in progress.
 pub struct PyMftParser {
     inner: SharedParser,
+    /// Fixed once the parser is built, so reading it doesn't need the lock.
+    entry_count: u64,
 }
 
 #[pymethods]
@@ -99,6 +103,7 @@ impl PyMftParser {
         let parser = MftParser::from_read_seek(boxed_read_seek, size).map_err(PyMftError)?;
 
         Ok(PyMftParser {
+            entry_count: parser.get_entry_count(),
             inner: Arc::new(Mutex::new(parser)),
         })
     }
@@ -107,23 +112,26 @@ impl PyMftParser {
     /// --
     ///
     /// Returns the total number of entries in the MFT.
-    fn number_of_entries(&self, py: Python) -> u64 {
-        lock_parser(&self.inner, py).get_entry_count()
+    fn number_of_entries(&self) -> u64 {
+        self.entry_count
     }
 
     /// get_entry(self, entry_id)
     /// --
     ///
     /// Returns the entry with this number, or `None` if its record is all zeroes (an entry
-    /// `entries()` skips). Raises `IndexError` past the last entry.
-    fn get_entry(&self, py: Python, entry_id: u64) -> PyResult<Option<Py<PyMftEntry>>> {
+    /// `entries()` skips). Raises `IndexError` for a negative number or one past the last entry.
+    fn get_entry(&self, py: Python, entry_id: i64) -> PyResult<Option<Py<PyMftEntry>>> {
+        let count = self.entry_count;
+        let entry_id = match u64::try_from(entry_id) {
+            Ok(id) if id < count => id,
+            _ => {
+                return Err(PyErr::new::<exceptions::PyIndexError, _>(format!(
+                    "entry {entry_id} is out of range ({count} entries)"
+                )));
+            }
+        };
         let mut parser = lock_parser(&self.inner, py);
-        let count = parser.get_entry_count();
-        if entry_id >= count {
-            return Err(PyErr::new::<exceptions::PyIndexError, _>(format!(
-                "entry {entry_id} is past the last entry ({count} entries)"
-            )));
-        }
         let entry = parser.get_entry(entry_id).map_err(PyMftError)?;
         if &entry.header.signature == ZERO_HEADER {
             return Ok(None);
@@ -135,28 +143,28 @@ impl PyMftParser {
     /// --
     ///
     /// Returns an iterator that yields the mft entries as python objects.
-    fn entries(&self) -> PyResult<Py<PyMftEntriesIterator>> {
-        self.records_iterator(Output::Python)
+    fn entries(&self, py: Python) -> PyResult<Py<PyMftEntriesIterator>> {
+        self.records_iterator(py, Output::Python)
     }
 
     /// entries_json(self, /)
     /// --
     ///
     /// Returns an iterator that yields mft entries as JSON.
-    fn entries_json(&self) -> PyResult<Py<PyMftEntriesIterator>> {
-        self.records_iterator(Output::JSON)
+    fn entries_json(&self, py: Python) -> PyResult<Py<PyMftEntriesIterator>> {
+        self.records_iterator(py, Output::JSON)
     }
 
     /// entries_csv(self, /)
     /// --
     ///
     /// Returns an iterator that yields mft entries CSV lines.
-    fn entries_csv(&self) -> PyResult<Py<PyMftEntriesIterator>> {
-        self.records_iterator(Output::CSV)
+    fn entries_csv(&self, py: Python) -> PyResult<Py<PyMftEntriesIterator>> {
+        self.records_iterator(py, Output::CSV)
     }
 
     fn __iter__(slf: PyRef<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
-        slf.entries()
+        slf.entries(slf.py())
     }
     fn __next__(_slf: PyRef<Self>) -> PyResult<Option<Py<PyAny>>> {
         Err(PyErr::new::<exceptions::PyNotImplementedError, _>(
@@ -166,19 +174,21 @@ impl PyMftParser {
 }
 
 impl PyMftParser {
-    fn records_iterator(&self, output_format: Output) -> PyResult<Py<PyMftEntriesIterator>> {
-        Python::attach(|py| {
-            Py::new(
-                py,
-                PyMftEntriesIterator {
-                    total_number_of_records: self.number_of_entries(py),
-                    inner: Arc::clone(&self.inner),
-                    current_record: 0,
-                    output_format,
-                    csv_header_written: false,
-                },
-            )
-        })
+    fn records_iterator(
+        &self,
+        py: Python,
+        output_format: Output,
+    ) -> PyResult<Py<PyMftEntriesIterator>> {
+        Py::new(
+            py,
+            PyMftEntriesIterator {
+                total_number_of_records: self.entry_count,
+                inner: Arc::clone(&self.inner),
+                current_record: 0,
+                output_format,
+                csv_header_written: false,
+            },
+        )
     }
 }
 
@@ -197,7 +207,8 @@ impl PyMftEntriesIterator {
         Ok(slf.into())
     }
     fn __next__(mut slf: PyRefMut<Self>) -> PyResult<Option<Py<PyAny>>> {
-        slf.next()
+        let py = slf.py();
+        slf.next(py)
     }
 }
 
@@ -231,18 +242,15 @@ impl PyMftEntriesIterator {
     }
 
     fn entry_to_csv(
-        &mut self,
+        csv_header_written: &mut bool,
         parser: &mut MftParser<impl ReadSeek>,
         entry_result: Result<MftEntry, PyMftError>,
         py: Python,
     ) -> Py<PyAny> {
         let mut writer = WriterBuilder::new()
-            .has_headers(!self.csv_header_written)
+            .has_headers(!*csv_header_written)
             .from_writer(Vec::new());
-
-        if !self.csv_header_written {
-            self.csv_header_written = true
-        }
+        *csv_header_written = true;
 
         match entry_result {
             Ok(entry) => {
@@ -268,39 +276,45 @@ impl PyMftEntriesIterator {
         }
     }
 
-    fn next(&mut self) -> PyResult<Option<Py<PyAny>>> {
-        Python::attach(|py| {
-            let inner = Arc::clone(&self.inner);
-            let mut parser = lock_parser(&inner, py);
-            loop {
-                if self.current_record == self.total_number_of_records {
-                    return Ok(None);
-                }
-
-                let obj = match parser.get_entry(self.current_record) {
-                    Ok(entry) => {
-                        if &entry.header.signature == ZERO_HEADER {
-                            self.current_record += 1;
-                            continue;
-                        }
-
-                        let ret = match self.output_format {
-                            Output::Python => Self::entry_to_pyobject(&mut parser, Ok(entry), py),
-                            Output::JSON => Self::entry_to_json(Ok(entry), py),
-                            Output::CSV => self.entry_to_csv(&mut parser, Ok(entry), py),
-                        };
-
-                        Ok(Some(ret))
-                    }
-                    Err(error) => Ok(Some(
-                        PyErr::from(PyMftError(error)).into_py_any(py).unwrap(),
-                    )),
-                };
-
-                self.current_record += 1;
-                return obj;
+    fn next(&mut self, py: Python) -> PyResult<Option<Py<PyAny>>> {
+        let Self {
+            inner,
+            total_number_of_records,
+            current_record,
+            output_format,
+            csv_header_written,
+        } = self;
+        let mut parser = lock_parser(inner, py);
+        loop {
+            if *current_record == *total_number_of_records {
+                return Ok(None);
             }
-        })
+
+            let obj = match parser.get_entry(*current_record) {
+                Ok(entry) => {
+                    if &entry.header.signature == ZERO_HEADER {
+                        *current_record += 1;
+                        continue;
+                    }
+
+                    let ret = match output_format {
+                        Output::Python => Self::entry_to_pyobject(&mut parser, Ok(entry), py),
+                        Output::JSON => Self::entry_to_json(Ok(entry), py),
+                        Output::CSV => {
+                            Self::entry_to_csv(csv_header_written, &mut parser, Ok(entry), py)
+                        }
+                    };
+
+                    Ok(Some(ret))
+                }
+                Err(error) => Ok(Some(
+                    PyErr::from(PyMftError(error)).into_py_any(py).unwrap(),
+                )),
+            };
+
+            *current_record += 1;
+            return obj;
+        }
     }
 }
 

@@ -26,8 +26,8 @@ def test_parser_can_move_between_threads():
 
 
 def test_threads_can_share_a_parser():
-    # Each `entries()` iterator has its own position, and a file object's `read`
-    # releases the GIL while another thread is waiting for the parser.
+    # Each `entries()` iterator has its own position, and a thread waiting for the
+    # parser releases the GIL, so the thread holding it can call the file object's `read`.
     with open(SAMPLE, "rb") as f:
         parser = PyMftParser(f)
 

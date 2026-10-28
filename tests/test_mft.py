@@ -212,3 +212,5 @@ def test_get_entry_past_the_end(sample_mft: Path):
 
     with pytest.raises(IndexError):
         parser.get_entry(parser.number_of_entries())
+    with pytest.raises(IndexError):
+        parser.get_entry(-1)
