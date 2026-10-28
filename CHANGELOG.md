@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `PyMftParser.get_entry(entry_id)` reads one entry by number, with its `full_path`. It returns
+  `None` for a record that is all zeroes (an entry `entries()` skips) and raises `IndexError`
+  past the last entry.
+
+### Changed
+
+- A `PyMftParser` can be iterated any number of times, and `number_of_entries()` works after
+  iterating. Before, a second `entries()`, `entries_json()` or `entries_csv()` raised
+  `RuntimeError: PyMftParser can only be used once`. Iterators share the parser, including its
+  cache of directory paths, and each has its own position. Threads can share a parser too.
+
 ## [0.8.0] - 2026-10-27
 
 ### Added

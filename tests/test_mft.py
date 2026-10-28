@@ -1,4 +1,5 @@
 import datetime
+import itertools
 
 import pytest
 
@@ -160,3 +161,54 @@ def test_attribute_list_entries(sample_mft: Path):
     assert entries == [(0x10, 0, ""), (0x30, 0, ""), (0x80, 0, "")]
     # The entries can be iterated again.
     assert len(list(content.entries())) == 3
+
+
+def test_parser_can_be_iterated_more_than_once(sample_mft: Path):
+    parser = PyMftParser(str(sample_mft))
+
+    first = [entry.entry_id for entry in parser.entries()]
+    second = [entry.entry_id for entry in parser.entries()]
+
+    assert first == second
+    assert len(next(iter(parser.entries_json()))) > 0
+    assert parser.number_of_entries() == 13088
+
+
+def test_get_entry(sample_mft: Path):
+    parser = PyMftParser(str(sample_mft))
+
+    root = parser.get_entry(5)
+    assert root.entry_id == 5
+    assert root.full_path == "."
+    assert root.flags == "ALLOCATED | INDEX_PRESENT"
+
+    iterated = entry_by_id(sample_mft, 46)
+    looked_up = parser.get_entry(46)
+    assert looked_up.full_path == iterated.full_path
+    assert looked_up.file_size == iterated.file_size
+    assert len(list(looked_up.attributes())) == len(list(iterated.attributes()))
+
+
+def test_get_entry_while_iterating(sample_mft: Path):
+    parser = PyMftParser(str(sample_mft))
+    entries = parser.entries()
+
+    assert next(entries).entry_id == 0
+    assert parser.get_entry(5).full_path == "."
+    # The iterator carries on from where it was.
+    assert next(entries).entry_id == 1
+
+
+def test_get_entry_of_a_zeroed_record(sample_mft: Path):
+    parser = PyMftParser(str(sample_mft))
+
+    # Entry 16's record is all zeroes, so `entries()` skips it.
+    assert 16 not in [entry.entry_id for entry in itertools.islice(parser.entries(), 20)]
+    assert parser.get_entry(16) is None
+
+
+def test_get_entry_past_the_end(sample_mft: Path):
+    parser = PyMftParser(str(sample_mft))
+
+    with pytest.raises(IndexError):
+        parser.get_entry(parser.number_of_entries())
