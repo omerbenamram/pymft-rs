@@ -25,6 +25,22 @@ def test_parser_can_move_between_threads():
     assert len(ids) == 10
 
 
+def test_threads_can_share_a_parser():
+    # Each `entries()` iterator has its own position, and a thread waiting for the
+    # parser releases the GIL, so the thread holding it can call the file object's `read`.
+    with open(SAMPLE, "rb") as f:
+        parser = PyMftParser(f)
+
+        def walk(_):
+            return [e.entry_id for e in itertools.islice(parser.entries(), 2000)]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(walk, range(4), timeout=60))
+
+    assert all(ids == results[0] for ids in results)
+    assert len(results[0]) == 2000
+
+
 @pytest.mark.skipif(
     not sysconfig.get_config_var("Py_GIL_DISABLED"),
     reason="requires free-threaded CPython",

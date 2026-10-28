@@ -39,6 +39,8 @@ Run `pip install -e .`
 
 ## Usage
 
+A parser can be iterated more than once, and `parser.get_entry(5)` reads a single entry by number.
+
 Note that the iterators created by `parser.entries()` and `entry.attributes()` may return `RuntimeError` objects if there was an error while trying
 to parse one of the attributes, so check them before continuing.
 

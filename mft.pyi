@@ -14,11 +14,19 @@ class PyMftParser:
     """Returns an instance of the parser.
 
     Works on both a path (string), or a file-like object opened in binary mode.
+
+    A parser can be iterated any number of times, and `get_entry` reads one entry by
+    number, including while an iteration is in progress. Threads can share a parser.
     """
 
     def __new__(cls, path_or_file_like: str | BinaryIO) -> Self: ...
     def number_of_entries(self) -> int:
         """Returns the total number of entries in the MFT."""
+
+    def get_entry(self, entry_id: int) -> PyMftEntry | None:
+        """Returns the entry with this number, or `None` if its record is all zeroes
+        (an entry `entries()` skips). Raises `IndexError` for a negative number or one
+        past the last entry."""
 
     def entries(self) -> PyMftEntriesIterator:
         """Returns an iterator that yields the mft entries as python objects."""
@@ -37,7 +45,7 @@ class PyMftEntriesIterator:
     """Yields `PyMftEntry` objects from `entries()`, `str` from `entries_json()`,
     `bytes` from `entries_csv()`, or a parse error in place of a broken entry.
 
-    A parser can only be iterated once.
+    Each iterator has its own position.
     """
 
     def __iter__(self) -> Self: ...
