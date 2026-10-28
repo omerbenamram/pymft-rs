@@ -40,7 +40,8 @@ pub trait ReadSeek: Read + Seek {
 
 impl<T: Read + Seek> ReadSeek for T {}
 
-type SharedParser = Arc<Mutex<MftParser<Box<dyn ReadSeek + Send + Sync>>>>;
+type BoxedParser = MftParser<Box<dyn ReadSeek + Send + Sync>>;
+type SharedParser = Arc<Mutex<BoxedParser>>;
 
 /// Locks the parser shared by a `PyMftParser` and its iterators.
 ///
@@ -49,10 +50,7 @@ type SharedParser = Arc<Mutex<MftParser<Box<dyn ReadSeek + Send + Sync>>>>;
 /// while it is held (a file-like object's `read`, a `warnings` hook, a signal handler) must not
 /// call back into the same parser. A poisoned lock is recovered, since a panic can only happen
 /// after an entry's bytes were read.
-fn lock_parser<'a>(
-    parser: &'a SharedParser,
-    py: Python<'_>,
-) -> MutexGuard<'a, MftParser<Box<dyn ReadSeek + Send + Sync>>> {
+fn lock_parser<'a>(parser: &'a SharedParser, py: Python<'_>) -> MutexGuard<'a, BoxedParser> {
     parser
         .lock_py_attached(py)
         .unwrap_or_else(PoisonError::into_inner)
@@ -64,7 +62,7 @@ pub enum Output {
     JSON,
 }
 
-#[pyclass(module = "mft")]
+#[pyclass(frozen, module = "mft")]
 /// PyMftParser(self, path_or_file_like, /)
 /// --
 ///
@@ -206,45 +204,34 @@ impl PyMftEntriesIterator {
     fn __iter__(slf: PyRefMut<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
         Ok(slf.into())
     }
-    fn __next__(mut slf: PyRefMut<Self>) -> PyResult<Option<Py<PyAny>>> {
+    fn __next__(mut slf: PyRefMut<Self>) -> Option<Py<PyAny>> {
         let py = slf.py();
         slf.next(py)
     }
 }
 
 impl PyMftEntriesIterator {
-    fn entry_to_pyobject(
-        parser: &mut MftParser<impl ReadSeek>,
-        entry_result: Result<MftEntry, PyMftError>,
-        py: Python,
-    ) -> Py<PyAny> {
-        match entry_result {
-            Ok(entry) => match PyMftEntry::from_mft_entry(py, entry, parser)
-                .and_then(|entry| entry.into_py_any(py))
-            {
-                Ok(py_mft_entry) => py_mft_entry,
-                Err(e) => e.into_py_any(py).unwrap(),
-            },
-            Err(e) => PyErr::from(e).into_py_any(py).unwrap(),
+    fn entry_to_pyobject(parser: &mut BoxedParser, entry: MftEntry, py: Python) -> Py<PyAny> {
+        match PyMftEntry::from_mft_entry(py, entry, parser).and_then(|entry| entry.into_py_any(py))
+        {
+            Ok(py_mft_entry) => py_mft_entry,
+            Err(e) => e.into_py_any(py).unwrap(),
         }
     }
 
-    fn entry_to_json(entry_result: Result<MftEntry, PyMftError>, py: Python) -> Py<PyAny> {
-        match entry_result {
-            Ok(entry) => match sonic_rs::to_string(&entry) {
-                Ok(s) => PyString::new(py, &s).into_any().unbind(),
-                Err(_e) => PyErr::new::<exceptions::PyRuntimeError, _>("JSON Serialization failed")
-                    .into_py_any(py)
-                    .unwrap(),
-            },
-            Err(e) => PyErr::from(e).into_py_any(py).unwrap(),
+    fn entry_to_json(entry: MftEntry, py: Python) -> Py<PyAny> {
+        match sonic_rs::to_string(&entry) {
+            Ok(s) => PyString::new(py, &s).into_any().unbind(),
+            Err(_e) => PyErr::new::<exceptions::PyRuntimeError, _>("JSON Serialization failed")
+                .into_py_any(py)
+                .unwrap(),
         }
     }
 
     fn entry_to_csv(
         csv_header_written: &mut bool,
-        parser: &mut MftParser<impl ReadSeek>,
-        entry_result: Result<MftEntry, PyMftError>,
+        parser: &mut BoxedParser,
+        entry: MftEntry,
         py: Python,
     ) -> Py<PyAny> {
         let mut writer = WriterBuilder::new()
@@ -252,69 +239,43 @@ impl PyMftEntriesIterator {
             .from_writer(Vec::new());
         *csv_header_written = true;
 
-        match entry_result {
-            Ok(entry) => {
-                match writer.serialize(FlatMftEntryWithName::from_entry(&entry, parser)) {
-                    Ok(()) => {}
-                    Err(_e) => {
-                        return PyErr::new::<exceptions::PyRuntimeError, _>(
-                            "CSV Serialization failed",
-                        )
-                        .into_py_any(py)
-                        .unwrap();
-                    }
-                }
+        if writer
+            .serialize(FlatMftEntryWithName::from_entry(&entry, parser))
+            .is_err()
+        {
+            return PyErr::new::<exceptions::PyRuntimeError, _>("CSV Serialization failed")
+                .into_py_any(py)
+                .unwrap();
+        }
 
-                match writer.into_inner() {
-                    Ok(bytes) => PyBytes::new(py, &bytes).into_any().unbind(),
-                    Err(e) => PyErr::new::<exceptions::PyRuntimeError, _>(e.to_string())
-                        .into_py_any(py)
-                        .unwrap(),
-                }
-            }
-            Err(e) => PyErr::from(e).into_py_any(py).unwrap(),
+        match writer.into_inner() {
+            Ok(bytes) => PyBytes::new(py, &bytes).into_any().unbind(),
+            Err(e) => PyErr::new::<exceptions::PyRuntimeError, _>(e.to_string())
+                .into_py_any(py)
+                .unwrap(),
         }
     }
 
-    fn next(&mut self, py: Python) -> PyResult<Option<Py<PyAny>>> {
-        let Self {
-            inner,
-            total_number_of_records,
-            current_record,
-            output_format,
-            csv_header_written,
-        } = self;
-        let mut parser = lock_parser(inner, py);
-        loop {
-            if *current_record == *total_number_of_records {
-                return Ok(None);
-            }
+    fn next(&mut self, py: Python) -> Option<Py<PyAny>> {
+        let mut parser = lock_parser(&self.inner, py);
+        while self.current_record < self.total_number_of_records {
+            let id = self.current_record;
+            self.current_record += 1;
 
-            let obj = match parser.get_entry(*current_record) {
-                Ok(entry) => {
-                    if &entry.header.signature == ZERO_HEADER {
-                        *current_record += 1;
-                        continue;
-                    }
-
-                    let ret = match output_format {
-                        Output::Python => Self::entry_to_pyobject(&mut parser, Ok(entry), py),
-                        Output::JSON => Self::entry_to_json(Ok(entry), py),
-                        Output::CSV => {
-                            Self::entry_to_csv(csv_header_written, &mut parser, Ok(entry), py)
-                        }
-                    };
-
-                    Ok(Some(ret))
-                }
-                Err(error) => Ok(Some(
-                    PyErr::from(PyMftError(error)).into_py_any(py).unwrap(),
-                )),
+            let entry = match parser.get_entry(id) {
+                Ok(entry) if &entry.header.signature == ZERO_HEADER => continue,
+                Ok(entry) => entry,
+                Err(error) => return Some(PyErr::from(PyMftError(error)).into_py_any(py).unwrap()),
             };
-
-            *current_record += 1;
-            return obj;
+            return Some(match self.output_format {
+                Output::Python => Self::entry_to_pyobject(&mut parser, entry, py),
+                Output::JSON => Self::entry_to_json(entry, py),
+                Output::CSV => {
+                    Self::entry_to_csv(&mut self.csv_header_written, &mut parser, entry, py)
+                }
+            });
         }
+        None
     }
 }
 
