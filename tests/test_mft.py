@@ -94,8 +94,12 @@ def entry_by_id(sample_mft: Path, entry_id: int) -> PyMftEntry:
     raise AssertionError(f"entry {entry_id} not found")
 
 
+def attribute(entry: PyMftEntry, type_code: int):
+    return next(a for a in entry.attributes() if a.type_code == type_code)
+
+
 def attribute_content(entry: PyMftEntry, type_code: int):
-    return next(a for a in entry.attributes() if a.type_code == type_code).attribute_content
+    return attribute(entry, type_code).attribute_content
 
 
 def test_full_path_uses_backslashes(sample_mft: Path):
@@ -140,7 +144,7 @@ def test_index_root_entries(sample_mft: Path):
 
 
 def test_volume_attributes(sample_mft: Path):
-    entry = entry_by_id(sample_mft, 3)
+    entry = PyMftParser(str(sample_mft)).get_entry(3)
 
     assert attribute_content(entry, 0x60).name == ""
     info = attribute_content(entry, 0x70)
@@ -148,14 +152,9 @@ def test_volume_attributes(sample_mft: Path):
     assert info.flags == "(empty)"
     assert info.flags_value == 0
     # 8 reserved bytes, then NTFS 3.1 and no volume flags.
-    volume_information = next(a for a in entry.attributes() if a.type_code == 0x70)
-    assert volume_information.raw_value == b"\x00" * 8 + b"\x03\x01\x00\x00"
+    assert attribute(entry, 0x70).raw_value == b"\x00" * 8 + b"\x03\x01\x00\x00"
     # Non-resident $DATA has no resident value.
-    assert next(a for a in entry_by_id(sample_mft, 0).attributes() if a.type_code == 0x80).raw_value is None
-
-
-def reparse_point(entry: PyMftEntry):
-    return attribute_content(entry, 0xC0)
+    assert attribute(PyMftParser(str(sample_mft)).get_entry(0), 0x80).raw_value is None
 
 
 def test_reparse_points():
@@ -163,7 +162,7 @@ def test_reparse_points():
     # 28654, 84786 and 22487.
     path = Path(__file__).parent.parent / "samples" / "reparse_points"
     junction, symlink, app_exec_link, wci = (
-        reparse_point(entry) for entry in PyMftParser(str(path)).entries()
+        attribute_content(entry, 0xC0) for entry in PyMftParser(str(path)).entries()
     )
 
     # `Users\Default User`
@@ -207,7 +206,7 @@ def test_entry_header_extras(sample_mft: Path):
 
 
 def test_flag_values(sample_mft: Path):
-    entry = entry_by_id(sample_mft, 0)
+    entry = PyMftParser(str(sample_mft)).get_entry(0)
     attribute = next(entry.attributes())
     assert attribute.data_flags_value == 0
     # FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM
@@ -216,7 +215,7 @@ def test_flag_values(sample_mft: Path):
 
 
 def test_non_resident_sizes(sample_mft: Path):
-    data = attribute_content(entry_by_id(sample_mft, 0), 0x80)
+    data = attribute_content(PyMftParser(str(sample_mft)).get_entry(0), 0x80)
 
     assert (data.vcn_first, data.vcn_last) == (0, 6543)
     assert data.allocated_length == data.file_size == data.valid_data_length == 13402112

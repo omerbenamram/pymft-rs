@@ -704,6 +704,7 @@ impl PyMftAttributeX70 {
 /// - `LxSymlink` (a WSL symlink): `target`
 /// - `Other` (any other tag, or data that doesn't match its tag): `data`
 #[pyclass(module = "mft")]
+#[derive(Default)]
 pub struct PyMftAttributeXC0 {
     /// The reparse tag, which says which file system filter owns the data.
     #[pyo3(get)]
@@ -735,55 +736,55 @@ pub struct PyMftAttributeXC0 {
 
 impl PyMftAttributeXC0 {
     pub fn from_xc0(py: Python, attr: &ReparsePointAttr) -> PyResult<Py<Self>> {
-        let mut xc0 = PyMftAttributeXC0 {
+        let base = PyMftAttributeXC0 {
             tag: attr.tag,
             tag_name: attr.tag_name,
             guid: attr.guid.as_ref().map(ToString::to_string),
-            reparse_type: "Other",
-            substitute_name: None,
-            print_name: None,
-            is_relative: None,
-            package_id: None,
-            app_user_model_id: None,
-            target_path: None,
-            target: None,
-            data: None,
+            ..Default::default()
         };
-        match &attr.data {
+        let xc0 = match &attr.data {
             ReparseData::SymbolicLink {
                 substitute_name,
                 print_name,
                 relative,
-            } => {
-                xc0.reparse_type = "SymbolicLink";
-                xc0.substitute_name = Some(substitute_name.to_utf8_string());
-                xc0.print_name = Some(print_name.to_utf8_string());
-                xc0.is_relative = Some(*relative);
-            }
+            } => PyMftAttributeXC0 {
+                reparse_type: "SymbolicLink",
+                substitute_name: Some(substitute_name.to_utf8_string()),
+                print_name: Some(print_name.to_utf8_string()),
+                is_relative: Some(*relative),
+                ..base
+            },
             ReparseData::MountPoint {
                 substitute_name,
                 print_name,
-            } => {
-                xc0.reparse_type = "MountPoint";
-                xc0.substitute_name = Some(substitute_name.to_utf8_string());
-                xc0.print_name = Some(print_name.to_utf8_string());
-            }
+            } => PyMftAttributeXC0 {
+                reparse_type: "MountPoint",
+                substitute_name: Some(substitute_name.to_utf8_string()),
+                print_name: Some(print_name.to_utf8_string()),
+                ..base
+            },
             ReparseData::AppExecLink {
                 package_id,
                 app_user_model_id,
                 target_path,
-            } => {
-                xc0.reparse_type = "AppExecLink";
-                xc0.package_id = Some(package_id.to_utf8_string());
-                xc0.app_user_model_id = Some(app_user_model_id.to_utf8_string());
-                xc0.target_path = Some(target_path.to_utf8_string());
-            }
-            ReparseData::LxSymlink { target } => {
-                xc0.reparse_type = "LxSymlink";
-                xc0.target = Some(target.to_string());
-            }
-            ReparseData::Other { data } => xc0.data = Some(data.to_vec()),
-        }
+            } => PyMftAttributeXC0 {
+                reparse_type: "AppExecLink",
+                package_id: Some(package_id.to_utf8_string()),
+                app_user_model_id: Some(app_user_model_id.to_utf8_string()),
+                target_path: Some(target_path.to_utf8_string()),
+                ..base
+            },
+            ReparseData::LxSymlink { target } => PyMftAttributeXC0 {
+                reparse_type: "LxSymlink",
+                target: Some(target.to_string()),
+                ..base
+            },
+            ReparseData::Other { data } => PyMftAttributeXC0 {
+                reparse_type: "Other",
+                data: Some(data.to_vec()),
+                ..base
+            },
+        };
         Py::new(py, xc0)
     }
 }
