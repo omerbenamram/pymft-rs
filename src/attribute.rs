@@ -72,8 +72,34 @@ impl PyMftAttribute {
     }
 }
 
+impl PyMftAttribute {
+    /// The attribute's record and its header, parsed again from the entry.
+    fn header(&self) -> PyResult<(&[u8], MftAttributeHeader<'_>)> {
+        // `PyMftEntry::attributes` already parsed this record's header, so it is in bounds.
+        let record = &self.entry.data[self.start_offset..][..self.data_size as usize];
+        let header = MftAttributeHeader::from_slice(record, self.start_offset as u64)
+            .map_err(PyMftError)?
+            .expect("an $END marker is not an attribute");
+        Ok((record, header))
+    }
+}
+
 #[pymethods]
 impl PyMftAttribute {
+    /// The value of a resident attribute as stored in the record, or `None` for a non-resident
+    /// one. Parsed classes don't keep every byte (reserved fields, slack after names), so this
+    /// is how to get them.
+    #[getter]
+    pub fn raw_value(&self) -> PyResult<Option<Vec<u8>>> {
+        let (record, header) = self.header()?;
+        Ok(match &header.residential_header {
+            ResidentialHeader::Resident(resident) => {
+                Some(resident.value(record).map_err(PyMftError)?.to_vec())
+            }
+            ResidentialHeader::NonResident(_) => None,
+        })
+    }
+
     /// Will be one of
     /// - `PyMftAttributeX10`
     /// - `PyMftAttributeX20`
@@ -88,11 +114,7 @@ impl PyMftAttribute {
     /// - `PyMftAttributeOther` (Currently unparsed in rust)
     #[getter]
     pub fn attribute_content(&self) -> PyResult<Py<PyAny>> {
-        // `PyMftEntry::attributes` already parsed this record's header, so it is in bounds.
-        let record = &self.entry.data[self.start_offset..][..self.data_size as usize];
-        let header = MftAttributeHeader::from_slice(record, self.start_offset as u64)
-            .map_err(PyMftError)?
-            .expect("an $END marker is not an attribute");
+        let (record, header) = self.header()?;
         let content = MftAttributeContent::from_record(record, &header).map_err(PyMftError)?;
 
         Python::attach(|py| {
@@ -566,7 +588,7 @@ pub struct PyMftAttributeNonResident {
     /// Compression unit size, as a power of two in clusters (0 if not compressed).
     #[pyo3(get)]
     pub unit_compression_size: u16,
-    /// Bytes actually allocated on disk. Only stored for compressed attributes.
+    /// Bytes actually allocated on disk. Only read for compressed attributes, `None` otherwise.
     #[pyo3(get)]
     pub total_allocated: Option<u64>,
 }
@@ -768,7 +790,8 @@ impl PyMftAttributeXC0 {
 
 #[pymethods]
 impl PyMftAttributeXC0 {
-    /// The raw data of an `Other` reparse point.
+    /// The tag-specific data of an `Other` reparse point: the bytes after the reparse header
+    /// (and the GUID of a third-party tag).
     #[getter]
     pub fn data(&self) -> Option<&[u8]> {
         self.data.as_deref()

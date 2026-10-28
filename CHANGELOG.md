@@ -17,7 +17,9 @@ and this project adheres to
   `PyMftAttributeX60` (`name`), `PyMftAttributeX70` (`major_version`, `minor_version`, `flags`)
   and `PyMftAttributeXC0` (the tag and its name, a third-party tag's GUID, and the decoded
   target of symlinks, junctions and mount points, app execution aliases and WSL symlinks; other
-  tags keep their `data`).
+  tags keep their tag-specific `data`).
+- `PyMftAttribute.raw_value` is a resident attribute's value as stored in the record (`None`
+  for non-resident attributes), whatever its content class.
 - `PyMftEntry` has `lsn` (the $LogFile sequence number), `is_allocated`, `is_dir` and
   `valid_fixup`.
 - Flags are also available as integers: `PyMftEntry.flags_value`,
@@ -32,7 +34,9 @@ and this project adheres to
 
 - **Breaking:** `attribute_content` of `$VOLUME_NAME`, `$VOLUME_INFORMATION` and
   `$REPARSE_POINT` is now `PyMftAttributeX60`, `PyMftAttributeX70` or `PyMftAttributeXC0`
-  instead of `PyMftAttributeOther`. A value too short to parse is still `PyMftAttributeOther`.
+  instead of `PyMftAttributeOther`. The raw value is in the new `PyMftAttribute.raw_value`.
+  The `data` of an undecoded reparse point is the bytes after its 8-byte header (and a
+  third-party tag's GUID). A value too short to parse is still `PyMftAttributeOther`.
 - A `PyMftParser` can be iterated any number of times, and `number_of_entries()` works after
   iterating. Before, a second `entries()`, `entries_json()` or `entries_csv()` raised
   `RuntimeError: PyMftParser can only be used once`. Iterators share the parser, including its

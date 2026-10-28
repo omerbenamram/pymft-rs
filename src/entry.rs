@@ -37,7 +37,8 @@ pub struct PyMftEntry {
     #[pyo3(get)]
     pub lsn: u64,
     /// Whether the update sequence (fixup) values matched at the end of every sector. `None`
-    /// when the record has no update sequence array.
+    /// when the record's signature isn't `FILE` (such as a `BAAD` record), so the fixups weren't
+    /// checked.
     #[pyo3(get)]
     pub valid_fixup: Option<bool>,
     #[pyo3(get)]

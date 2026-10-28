@@ -67,7 +67,8 @@ class PyMftEntry:
     """The $LogFile sequence number (LSN) of the last logged change to this record."""
     valid_fixup: bool | None
     """Whether the update sequence (fixup) values matched at the end of every sector.
-    `None` when the record has no update sequence array."""
+    `None` when the record's signature isn't `FILE` (such as a `BAAD` record), so the fixups
+    weren't checked."""
     used_entry_size: int
     total_entry_size: int
     full_path: str
@@ -92,6 +93,11 @@ class PyMftAttribute:
     """`data_flags` as an integer."""
     is_resident: bool
     data_size: int
+    @property
+    def raw_value(self) -> bytes | None:
+        """The value of a resident attribute as stored in the record, or `None` for a
+        non-resident one. Parsed classes don't keep every byte (reserved fields, slack after
+        names), so this is how to get them."""
     @property
     def attribute_content(
         self,
@@ -275,7 +281,8 @@ class PyMftAttributeXC0:
     target: str | None
     @property
     def data(self) -> bytes | None:
-        """The raw data of an `Other` reparse point."""
+        """The tag-specific data of an `Other` reparse point: the bytes after the reparse
+        header (and the GUID of a third-party tag)."""
 
 @final
 class PyMftAttributeNonResident:
@@ -295,7 +302,8 @@ class PyMftAttributeNonResident:
     unit_compression_size: int
     """Compression unit size, as a power of two in clusters (0 if not compressed)."""
     total_allocated: int | None
-    """Bytes actually allocated on disk. Only stored for compressed attributes."""
+    """Bytes actually allocated on disk. Only read for compressed attributes, `None`
+    otherwise."""
     def data_runs(self) -> list[PyMftDataRun]: ...
 
 @final

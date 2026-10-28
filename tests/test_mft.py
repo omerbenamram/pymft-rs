@@ -147,6 +147,11 @@ def test_volume_attributes(sample_mft: Path):
     assert (info.major_version, info.minor_version) == (3, 1)
     assert info.flags == "(empty)"
     assert info.flags_value == 0
+    # 8 reserved bytes, then NTFS 3.1 and no volume flags.
+    volume_information = next(a for a in entry.attributes() if a.type_code == 0x70)
+    assert volume_information.raw_value == b"\x00" * 8 + b"\x03\x01\x00\x00"
+    # Non-resident $DATA has no resident value.
+    assert next(a for a in entry_by_id(sample_mft, 0).attributes() if a.type_code == 0x80).raw_value is None
 
 
 def reparse_point(entry: PyMftEntry):
