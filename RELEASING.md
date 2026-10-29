@@ -8,15 +8,19 @@ This project is published to PyPI as `mft` using `maturin` + GitHub Actions.
 
 ## Cut a release
 
-- Bump the version in `Cargo.toml` and commit the refreshed `Cargo.lock` (any `cargo build` updates it; CI builds with `--locked`).
-- Add release notes to `CHANGELOG.md`.
-- Tag and push:
+1. Pick the version. While on 0.x, a breaking change or a new feature bumps the minor version
+   and fixes alone bump the patch version.
+2. Open a `chore(release): X.Y.Z` PR that bumps `version` in `Cargo.toml`, commits the refreshed
+   `Cargo.lock` (any `cargo build` updates it; CI builds with `--locked`), and renames
+   `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD`. If it needs a new `mft`
+   crate, release that first and point the dependency at the crates.io version.
+3. Merge it.
 
-```bash
-git tag -a vX.Y.Z -m "vX.Y.Z"
-git push origin vX.Y.Z
-```
+The merge runs `.github/workflows/auto-tag.yml`. It sees a `Cargo.toml` version with no tag,
+pushes the `vX.Y.Z` tag on the merge commit, and calls `.github/workflows/ci.yml` for it. Once
+every wheel job (abi3 for CPython 3.10+, and `cp314t` for free-threaded 3.14, on Linux glibc/musl
+x86_64 + aarch64, macOS universal2 and Windows) and the sdist build pass, its `release` job
+publishes them to PyPI with `uv publish`.
 
-Pushing the tag runs `.github/workflows/ci.yml`. Once every wheel job (abi3 for CPython 3.10+, and
-`cp314t` for free-threaded 3.14, on Linux glibc/musl x86_64 + aarch64, macOS universal2 and Windows)
-and the sdist build pass, its `release` job publishes them to PyPI with `uv publish`.
+Pushing a `vX.Y.Z` tag by hand still runs `ci.yml` directly; auto-tag then skips that version
+because the tag exists. To retry a failed release, re-run the failed jobs of its run.
