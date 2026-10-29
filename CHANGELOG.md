@@ -46,7 +46,6 @@ and this project adheres to
 ### Changed
 
 - Built on mft 0.9.0.
-
 - **Breaking:** `attribute_content` of `$VOLUME_NAME`, `$VOLUME_INFORMATION` and
   `$REPARSE_POINT` is now `PyMftAttributeX60`, `PyMftAttributeX70` or `PyMftAttributeXC0`
   instead of `PyMftAttributeOther`. The raw value is in the new `PyMftAttribute.raw_value`.
