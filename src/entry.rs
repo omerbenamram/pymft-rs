@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 
 use crate::attribute::PyMftAttribute;
 use crate::err::PyMftError;
-use crate::utils::{flags_to_string, windows_path};
+use crate::utils::windows_path;
 use mft_rs::attribute::MftAttributeType;
 use mft_rs::{MftEntry, MftParser};
 
@@ -106,7 +106,7 @@ impl PyMftEntry {
                 base_entry_id: entry.header.base_reference.entry,
                 base_entry_sequence: entry.header.base_reference.sequence,
                 hard_link_count: entry.header.hard_link_count,
-                flags: flags_to_string(&entry.header.flags),
+                flags: entry.header.flags.to_string(),
                 flags_value: entry.header.flags.bits(),
                 is_allocated: entry.is_allocated(),
                 is_dir: entry.is_dir(),

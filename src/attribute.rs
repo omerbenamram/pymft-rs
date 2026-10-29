@@ -7,10 +7,15 @@ use mft_rs::attribute::header::NonResidentHeader;
 use mft_rs::attribute::header::{MftAttributeHeader, ResidentialHeader};
 use mft_rs::attribute::non_resident_attr::NonResidentAttr;
 use mft_rs::attribute::x40::ObjectIdAttr;
+use mft_rs::attribute::x50::{Ace, Acl, SecurityDescriptorAttr};
 use mft_rs::attribute::x60::VolumeNameAttr;
 use mft_rs::attribute::x70::VolumeInformationAttr;
-use mft_rs::attribute::x90::{IndexEntryHeader, IndexRootAttr, IndexRootFlags};
+use mft_rs::attribute::x90::{
+    IndexEntryHeader, IndexRootAttr, IndexRootFlags, ViewIndexEntry, ViewIndexValue,
+};
 use mft_rs::attribute::xc0::{ReparseData, ReparsePointAttr};
+use mft_rs::attribute::xd0::EaInformationAttr;
+use mft_rs::attribute::xe0::{EaAttr, EaEntry, EaValue};
 use mft_rs::{FileNameAttr, MftEntry, StandardInfoAttr};
 
 use num_traits::cast::ToPrimitive;
@@ -21,7 +26,7 @@ use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
 
 use crate::err::PyMftError;
-use crate::utils::{date_to_pyobject, flags_to_string};
+use crate::utils::date_to_pyobject;
 
 #[pyclass(module = "mft")]
 pub struct PyMftAttribute {
@@ -61,7 +66,7 @@ impl PyMftAttribute {
                 type_name: format!("{:?}", header.type_code),
                 type_code: header.type_code.to_u32().unwrap(),
                 name: header.name.to_utf8_string(),
-                data_flags: flags_to_string(&header.data_flags),
+                data_flags: header.data_flags.to_string(),
                 data_flags_value: header.data_flags.bits(),
                 is_resident: matches!(header.residential_header, ResidentialHeader::Resident(_)),
                 data_size: header.record_length,
@@ -105,11 +110,14 @@ impl PyMftAttribute {
     /// - `PyMftAttributeX20`
     /// - `PyMftAttributeX30`
     /// - `PyMftAttributeX40`
+    /// - `PyMftAttributeX50`
     /// - `PyMftAttributeX60`
     /// - `PyMftAttributeX70`
     /// - `PyMftAttributeX80`
     /// - `PyMftAttributeX90`
     /// - `PyMftAttributeXC0`
+    /// - `PyMftAttributeXD0`
+    /// - `PyMftAttributeXE0`
     /// - `PyMftAttributeNonResident` (if attribute content is non-resident)
     /// - `PyMftAttributeOther` (Currently unparsed in rust)
     #[getter]
@@ -131,6 +139,9 @@ impl PyMftAttribute {
                 MftAttributeContent::AttrX40(info) => {
                     PyMftAttributeX40::from_x40(py, info.clone())?.into_py_any(py)?
                 }
+                MftAttributeContent::AttrX50(info) => {
+                    PyMftAttributeX50::from_x50(py, info)?.into_py_any(py)?
+                }
                 MftAttributeContent::AttrX80(info) => {
                     PyMftAttributeX80::from_data(py, info.data())?.into_py_any(py)?
                 }
@@ -148,6 +159,12 @@ impl PyMftAttribute {
                 }
                 MftAttributeContent::AttrXC0(info) => {
                     PyMftAttributeXC0::from_xc0(py, info)?.into_py_any(py)?
+                }
+                MftAttributeContent::AttrXD0(info) => {
+                    PyMftAttributeXD0::from_xd0(py, info)?.into_py_any(py)?
+                }
+                MftAttributeContent::AttrXE0(info) => {
+                    PyMftAttributeXE0::from_xe0(py, info)?.into_py_any(py)?
                 }
                 // Non-resident attribute: the content lives in clusters elsewhere on the volume.
                 MftAttributeContent::DataRun(info) => {
@@ -222,7 +239,7 @@ impl PyMftAttributeX10 {
 
     #[getter]
     pub fn file_flags(&self) -> PyResult<String> {
-        Ok(flags_to_string(&self.inner.file_flags))
+        Ok(self.inner.file_flags.to_string())
     }
 
     /// `file_flags` as an integer.
@@ -390,7 +407,7 @@ impl PyMftAttributeX30 {
 
     #[getter]
     pub fn flags(&self) -> PyResult<String> {
-        Ok(flags_to_string(&self.file_flags))
+        Ok(self.file_flags.to_string())
     }
 
     /// `flags` as an integer.
@@ -439,6 +456,142 @@ impl PyMftAttributeX40 {
                     .unwrap_or_default(),
             },
         )
+    }
+}
+
+/// $SECURITY_DESCRIPTOR: a resident security descriptor. Since NTFS 3.0 most files only have a
+/// security id in `$STANDARD_INFORMATION`, and the descriptor is in `$Secure`.
+#[pyclass(module = "mft")]
+pub struct PyMftAttributeX50 {
+    #[pyo3(get)]
+    pub revision: u8,
+    #[pyo3(get)]
+    pub control: String,
+    /// `control` as an integer.
+    #[pyo3(get)]
+    pub control_value: u16,
+    /// The owner, as a SID string (`S-1-5-18`), or `None` when the descriptor has none.
+    #[pyo3(get)]
+    pub owner: Option<String>,
+    #[pyo3(get)]
+    pub group: Option<String>,
+    /// Only set when `control` has `SE_SACL_PRESENT`.
+    #[pyo3(get)]
+    pub sacl: Option<Py<PyMftAcl>>,
+    /// Only set when `control` has `SE_DACL_PRESENT`. A present flag without a DACL is a NULL
+    /// DACL, which grants everyone full access.
+    #[pyo3(get)]
+    pub dacl: Option<Py<PyMftAcl>>,
+}
+
+impl PyMftAttributeX50 {
+    pub fn from_x50(py: Python, attr: &SecurityDescriptorAttr) -> PyResult<Py<Self>> {
+        let acl = |acl: &Option<Acl>| {
+            acl.as_ref()
+                .map(|acl| PyMftAcl::from_acl(py, acl))
+                .transpose()
+        };
+        Py::new(
+            py,
+            PyMftAttributeX50 {
+                revision: attr.revision,
+                control: attr.control.to_string(),
+                control_value: attr.control.bits(),
+                owner: attr.owner.clone(),
+                group: attr.group.clone(),
+                sacl: acl(&attr.sacl)?,
+                dacl: acl(&attr.dacl)?,
+            },
+        )
+    }
+}
+
+/// An access control list.
+#[pyclass(module = "mft")]
+pub struct PyMftAcl {
+    #[pyo3(get)]
+    pub revision: u8,
+    entries: Vec<Py<PyMftAce>>,
+}
+
+impl PyMftAcl {
+    pub fn from_acl(py: Python, acl: &Acl) -> PyResult<Py<Self>> {
+        let entries = acl
+            .entries
+            .iter()
+            .map(|ace| PyMftAce::from_ace(py, ace))
+            .collect::<PyResult<_>>()?;
+        Py::new(
+            py,
+            PyMftAcl {
+                revision: acl.revision,
+                entries,
+            },
+        )
+    }
+}
+
+#[pymethods]
+impl PyMftAcl {
+    pub fn entries(&self, py: Python) -> Vec<Py<PyMftAce>> {
+        self.entries.iter().map(|ace| ace.clone_ref(py)).collect()
+    }
+}
+
+/// An access control entry.
+#[pyclass(module = "mft")]
+pub struct PyMftAce {
+    #[pyo3(get)]
+    pub ace_type: u8,
+    /// The name of a documented type (for example `ACCESS_ALLOWED`), without the `_ACE_TYPE`
+    /// suffix.
+    #[pyo3(get)]
+    pub ace_type_name: Option<&'static str>,
+    #[pyo3(get)]
+    pub flags: String,
+    /// `flags` as an integer.
+    #[pyo3(get)]
+    pub flags_value: u8,
+    /// `None` for types whose layout isn't decoded.
+    #[pyo3(get)]
+    pub access_mask: Option<u32>,
+    /// The object type of an object ACE, when its flags say it has one.
+    #[pyo3(get)]
+    pub object_type: Option<String>,
+    /// The inherited object type of an object ACE, when its flags say it has one.
+    #[pyo3(get)]
+    pub inherited_object_type: Option<String>,
+    #[pyo3(get)]
+    pub sid: Option<String>,
+    data: Vec<u8>,
+}
+
+impl PyMftAce {
+    pub fn from_ace(py: Python, ace: &Ace) -> PyResult<Py<Self>> {
+        Py::new(
+            py,
+            PyMftAce {
+                ace_type: ace.ace_type,
+                ace_type_name: ace.ace_type_name,
+                flags: ace.flags.to_string(),
+                flags_value: ace.flags.bits(),
+                access_mask: ace.access_mask,
+                object_type: ace.object_type.as_ref().map(ToString::to_string),
+                inherited_object_type: ace.inherited_object_type.as_ref().map(ToString::to_string),
+                sid: ace.sid.clone(),
+                data: ace.data.to_vec(),
+            },
+        )
+    }
+}
+
+#[pymethods]
+impl PyMftAce {
+    /// The bytes after the decoded fields (for example a callback ACE's application data), or
+    /// the whole body for types whose layout isn't decoded.
+    #[getter]
+    pub fn data(&self) -> &[u8] {
+        &self.data
     }
 }
 
@@ -492,6 +645,7 @@ pub struct PyMftAttributeX90 {
     /// index root are available here).
     pub is_large_index: bool,
     index_entries: Vec<Py<PyMftIndexEntry>>,
+    view_entries: Vec<Py<PyMftViewIndexEntry>>,
 }
 
 impl PyMftAttributeX90 {
@@ -501,6 +655,12 @@ impl PyMftAttributeX90 {
             .index_entries
             .iter()
             .map(|entry| PyMftIndexEntry::from_index_entry(py, entry))
+            .collect::<PyResult<_>>()?;
+        let view_entries = attr
+            .index_entries
+            .view_entries
+            .iter()
+            .map(|entry| PyMftViewIndexEntry::from_view_entry(py, entry))
             .collect::<PyResult<_>>()?;
 
         Py::new(
@@ -515,6 +675,7 @@ impl PyMftAttributeX90 {
                 index_node_allocation_length: attr.index_node_allocation_length,
                 is_large_index: attr.index_root_flags.contains(IndexRootFlags::LARGE_INDEX),
                 index_entries,
+                view_entries,
             },
         )
     }
@@ -522,9 +683,18 @@ impl PyMftAttributeX90 {
 
 #[pymethods]
 impl PyMftAttributeX90 {
-    /// The index entries stored in the index root itself.
+    /// The index entries stored in the index root itself, for a `$FILE_NAME` index (`$I30`).
     pub fn index_entries(&self, py: Python) -> Vec<Py<PyMftIndexEntry>> {
         self.index_entries
+            .iter()
+            .map(|entry| entry.clone_ref(py))
+            .collect()
+    }
+
+    /// The index entries stored in the index root itself, for any other index (a view index
+    /// such as `$Secure:$SII` or `$Extend\$Quota:$Q`).
+    pub fn view_entries(&self, py: Python) -> Vec<Py<PyMftViewIndexEntry>> {
+        self.view_entries
             .iter()
             .map(|entry| entry.clone_ref(py))
             .collect()
@@ -558,10 +728,200 @@ impl PyMftIndexEntry {
                 mft_reference_entry_sequence: entry.mft_reference.sequence,
                 index_record_length: entry.index_record_length,
                 attr_fname_length: entry.attr_fname_length,
-                flags: flags_to_string(&entry.flags),
+                flags: entry.flags.to_string(),
                 fname_info: PyMftAttributeX30::from_x30(py, &entry.fname_info)?,
             },
         )
+    }
+}
+
+/// An entry of a view index: one of the indexes NTFS keeps in its metadata files, recognized
+/// from the index's collation rule and the sizes of the entry's key and data. `value_type` says
+/// which of the optional fields are set:
+/// - `SecurityDescriptor` (`$Secure:$SDH` or `$Secure:$SII`): `hash`, `security_id`,
+///   `sds_offset` and `sds_length`
+/// - `ObjectId` (`$Extend\$ObjId:$O`): `object_id`, `mft_reference_entry_id`,
+///   `mft_reference_entry_sequence`, `birth_volume_id`, `birth_object_id` and `domain_id`
+/// - `QuotaOwner` (`$Extend\$Quota:$O`): `sid` and `owner_id`
+/// - `Quota` (`$Extend\$Quota:$Q`): `owner_id`, `version`, `quota_flags`, `bytes_used`,
+///   `change_time`, `warning_limit` and `hard_limit`, and `exceeded_time` and `sid` when the
+///   entry has them
+/// - `Reparse` (`$Extend\$Reparse:$R`): `tag`, `tag_name`, `mft_reference_entry_id` and
+///   `mft_reference_entry_sequence`
+/// - `Other` (any other index): `key` and `data`
+#[pyclass(module = "mft")]
+#[derive(Default)]
+pub struct PyMftViewIndexEntry {
+    #[pyo3(get)]
+    pub flags: String,
+    /// `flags` as an integer.
+    #[pyo3(get)]
+    pub flags_value: u32,
+    #[pyo3(get)]
+    pub value_type: &'static str,
+    #[pyo3(get)]
+    pub hash: Option<u32>,
+    #[pyo3(get)]
+    pub security_id: Option<u32>,
+    #[pyo3(get)]
+    pub sds_offset: Option<u64>,
+    #[pyo3(get)]
+    pub sds_length: Option<u32>,
+    #[pyo3(get)]
+    pub object_id: Option<String>,
+    #[pyo3(get)]
+    pub mft_reference_entry_id: Option<u64>,
+    #[pyo3(get)]
+    pub mft_reference_entry_sequence: Option<u16>,
+    #[pyo3(get)]
+    pub birth_volume_id: Option<String>,
+    #[pyo3(get)]
+    pub birth_object_id: Option<String>,
+    #[pyo3(get)]
+    pub domain_id: Option<String>,
+    #[pyo3(get)]
+    pub sid: Option<String>,
+    #[pyo3(get)]
+    pub owner_id: Option<u32>,
+    #[pyo3(get)]
+    pub version: Option<u32>,
+    #[pyo3(get)]
+    pub quota_flags: Option<u32>,
+    #[pyo3(get)]
+    pub bytes_used: Option<u64>,
+    change_time: Option<Timestamp>,
+    /// -1 means no limit.
+    #[pyo3(get)]
+    pub warning_limit: Option<i64>,
+    /// -1 means no limit.
+    #[pyo3(get)]
+    pub hard_limit: Option<i64>,
+    exceeded_time: Option<Timestamp>,
+    #[pyo3(get)]
+    pub tag: Option<u32>,
+    /// The name of a documented tag, as in `PyMftAttributeXC0.tag_name`.
+    #[pyo3(get)]
+    pub tag_name: Option<&'static str>,
+    key: Option<Vec<u8>>,
+    data: Option<Vec<u8>>,
+}
+
+impl PyMftViewIndexEntry {
+    pub fn from_view_entry(py: Python, entry: &ViewIndexEntry) -> PyResult<Py<Self>> {
+        let base = PyMftViewIndexEntry {
+            flags: entry.flags.to_string(),
+            flags_value: entry.flags.bits(),
+            ..Default::default()
+        };
+        let view_entry = match &entry.value {
+            ViewIndexValue::SecurityDescriptor {
+                hash,
+                security_id,
+                sds_offset,
+                sds_length,
+            } => PyMftViewIndexEntry {
+                value_type: "SecurityDescriptor",
+                hash: Some(*hash),
+                security_id: Some(*security_id),
+                sds_offset: Some(*sds_offset),
+                sds_length: Some(*sds_length),
+                ..base
+            },
+            ViewIndexValue::ObjectId {
+                object_id,
+                mft_reference,
+                birth_volume_id,
+                birth_object_id,
+                domain_id,
+            } => PyMftViewIndexEntry {
+                value_type: "ObjectId",
+                object_id: Some(object_id.to_string()),
+                mft_reference_entry_id: Some(mft_reference.entry),
+                mft_reference_entry_sequence: Some(mft_reference.sequence),
+                birth_volume_id: Some(birth_volume_id.to_string()),
+                birth_object_id: Some(birth_object_id.to_string()),
+                domain_id: Some(domain_id.to_string()),
+                ..base
+            },
+            ViewIndexValue::QuotaOwner { sid, owner_id } => PyMftViewIndexEntry {
+                value_type: "QuotaOwner",
+                sid: Some(sid.clone()),
+                owner_id: Some(*owner_id),
+                ..base
+            },
+            ViewIndexValue::Quota {
+                owner_id,
+                version,
+                quota_flags,
+                bytes_used,
+                change_time,
+                warning_limit,
+                hard_limit,
+                exceeded_time,
+                sid,
+            } => PyMftViewIndexEntry {
+                value_type: "Quota",
+                owner_id: Some(*owner_id),
+                version: Some(*version),
+                quota_flags: Some(*quota_flags),
+                bytes_used: Some(*bytes_used),
+                change_time: Some(*change_time),
+                warning_limit: Some(*warning_limit),
+                hard_limit: Some(*hard_limit),
+                exceeded_time: *exceeded_time,
+                sid: sid.clone(),
+                ..base
+            },
+            ViewIndexValue::Reparse {
+                tag,
+                tag_name,
+                mft_reference,
+            } => PyMftViewIndexEntry {
+                value_type: "Reparse",
+                tag: Some(*tag),
+                tag_name: *tag_name,
+                mft_reference_entry_id: Some(mft_reference.entry),
+                mft_reference_entry_sequence: Some(mft_reference.sequence),
+                ..base
+            },
+            ViewIndexValue::Other { key, data } => PyMftViewIndexEntry {
+                value_type: "Other",
+                key: Some(key.to_vec()),
+                data: Some(data.to_vec()),
+                ..base
+            },
+        };
+        Py::new(py, view_entry)
+    }
+}
+
+#[pymethods]
+impl PyMftViewIndexEntry {
+    /// When the quota entry last changed.
+    #[getter]
+    pub fn change_time(&self) -> PyResult<Option<Py<PyAny>>> {
+        self.change_time.as_ref().map(date_to_pyobject).transpose()
+    }
+
+    /// When the owner went over their warning limit, if they did.
+    #[getter]
+    pub fn exceeded_time(&self) -> PyResult<Option<Py<PyAny>>> {
+        self.exceeded_time
+            .as_ref()
+            .map(date_to_pyobject)
+            .transpose()
+    }
+
+    /// The key of an `Other` entry.
+    #[getter]
+    pub fn key(&self) -> Option<&[u8]> {
+        self.key.as_deref()
+    }
+
+    /// The data of an `Other` entry.
+    #[getter]
+    pub fn data(&self) -> Option<&[u8]> {
+        self.data.as_deref()
     }
 }
 
@@ -690,7 +1050,7 @@ impl PyMftAttributeX70 {
             PyMftAttributeX70 {
                 major_version: attr.major_version,
                 minor_version: attr.minor_version,
-                flags: flags_to_string(&attr.flags),
+                flags: attr.flags.to_string(),
                 flags_value: attr.flags.bits(),
             },
         )
@@ -793,6 +1153,136 @@ impl PyMftAttributeXC0 {
 impl PyMftAttributeXC0 {
     /// The tag-specific data of an `Other` reparse point: the bytes after the reparse header
     /// (and the GUID of a third-party tag).
+    #[getter]
+    pub fn data(&self) -> Option<&[u8]> {
+        self.data.as_deref()
+    }
+}
+
+/// $EA_INFORMATION: the sizes of the file's extended attributes in `$EA`.
+#[pyclass(module = "mft")]
+pub struct PyMftAttributeXD0 {
+    /// The size of the extended attributes in packed form: each one's flags, lengths, name and
+    /// value, without the next entry offsets and padding that `$EA` stores.
+    #[pyo3(get)]
+    pub packed_ea_size: u16,
+    /// How many extended attributes have the `NEED_EA` flag.
+    #[pyo3(get)]
+    pub need_ea_count: u16,
+    /// The size of the extended attributes as `$EA` stores them, which is the size of its value.
+    #[pyo3(get)]
+    pub unpacked_ea_size: u32,
+}
+
+impl PyMftAttributeXD0 {
+    pub fn from_xd0(py: Python, attr: &EaInformationAttr) -> PyResult<Py<Self>> {
+        Py::new(
+            py,
+            PyMftAttributeXD0 {
+                packed_ea_size: attr.packed_ea_size,
+                need_ea_count: attr.need_ea_count,
+                unpacked_ea_size: attr.unpacked_ea_size,
+            },
+        )
+    }
+}
+
+/// $EA: the file's extended attributes. Windows keeps its own metadata here too, such as WSL's
+/// Linux owners and modes (`$LXUID`, `$LXGID`, `$LXMOD`, `$LXDEV`) and code integrity's
+/// `$CI.CATALOGHINT`.
+#[pyclass(module = "mft")]
+pub struct PyMftAttributeXE0 {
+    entries: Vec<Py<PyMftEaEntry>>,
+}
+
+impl PyMftAttributeXE0 {
+    pub fn from_xe0(py: Python, attr: &EaAttr) -> PyResult<Py<Self>> {
+        let entries = attr
+            .entries
+            .iter()
+            .map(|entry| PyMftEaEntry::from_ea_entry(py, entry))
+            .collect::<PyResult<_>>()?;
+        Py::new(py, PyMftAttributeXE0 { entries })
+    }
+}
+
+#[pymethods]
+impl PyMftAttributeXE0 {
+    pub fn entries(&self, py: Python) -> Vec<Py<PyMftEaEntry>> {
+        self.entries
+            .iter()
+            .map(|entry| entry.clone_ref(py))
+            .collect()
+    }
+}
+
+/// One extended attribute. `value_type` says which of the optional fields are set:
+/// - `LxInteger` (`$LXUID`, `$LXGID` or `$LXMOD`, a WSL file's Linux owner, group or mode):
+///   `value`
+/// - `LxDevice` (`$LXDEV`, the device numbers of a WSL device file): `major` and `minor`
+/// - `CatalogHint` (`$CI.CATALOGHINT`, the security catalog that signs the file): `catalog`
+/// - `Other` (any other value, or one that doesn't match its name's layout): `data`
+#[pyclass(module = "mft")]
+#[derive(Default)]
+pub struct PyMftEaEntry {
+    #[pyo3(get)]
+    pub flags: String,
+    /// `flags` as an integer.
+    #[pyo3(get)]
+    pub flags_value: u8,
+    #[pyo3(get)]
+    pub name: String,
+    #[pyo3(get)]
+    pub value_type: &'static str,
+    #[pyo3(get)]
+    pub value: Option<u32>,
+    #[pyo3(get)]
+    pub major: Option<u32>,
+    #[pyo3(get)]
+    pub minor: Option<u32>,
+    #[pyo3(get)]
+    pub catalog: Option<String>,
+    data: Option<Vec<u8>>,
+}
+
+impl PyMftEaEntry {
+    pub fn from_ea_entry(py: Python, entry: &EaEntry) -> PyResult<Py<Self>> {
+        let base = PyMftEaEntry {
+            flags: entry.flags.to_string(),
+            flags_value: entry.flags.bits(),
+            name: entry.name.to_string(),
+            ..Default::default()
+        };
+        let ea_entry = match &entry.value {
+            EaValue::LxInteger { value } => PyMftEaEntry {
+                value_type: "LxInteger",
+                value: Some(*value),
+                ..base
+            },
+            EaValue::LxDevice { major, minor } => PyMftEaEntry {
+                value_type: "LxDevice",
+                major: Some(*major),
+                minor: Some(*minor),
+                ..base
+            },
+            EaValue::CatalogHint { catalog } => PyMftEaEntry {
+                value_type: "CatalogHint",
+                catalog: Some(catalog.to_string()),
+                ..base
+            },
+            EaValue::Other { data } => PyMftEaEntry {
+                value_type: "Other",
+                data: Some(data.to_vec()),
+                ..base
+            },
+        };
+        Py::new(py, ea_entry)
+    }
+}
+
+#[pymethods]
+impl PyMftEaEntry {
+    /// The value of an `Other` entry.
     #[getter]
     pub fn data(&self) -> Option<&[u8]> {
         self.data.as_deref()
