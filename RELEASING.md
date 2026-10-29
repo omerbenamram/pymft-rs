@@ -17,7 +17,9 @@ This project is published to PyPI as `mft` using `maturin` + GitHub Actions.
 3. Merge it.
 
 The merge runs `.github/workflows/auto-tag.yml`. It sees a `Cargo.toml` version with no tag,
-pushes the `vX.Y.Z` tag on the merge commit, and calls `.github/workflows/ci.yml` for it. Once
+pushes the `vX.Y.Z` tag on the merge commit, and starts `.github/workflows/ci.yml` on that tag
+with `gh workflow run --ref vX.Y.Z` (a tag pushed with `GITHUB_TOKEN` doesn't trigger workflows,
+but a dispatch does). Once
 every wheel job (abi3 for CPython 3.10+, and `cp314t` for free-threaded 3.14, on Linux glibc/musl
 x86_64 + aarch64, macOS universal2 and Windows) and the sdist build pass, its `release` job
 publishes them to PyPI with `uv publish`.
