@@ -102,7 +102,7 @@ and this project adheres to
 - `data_runs()` gives the absolute LCN of a run that follows a sparse run. With mft 0.7.0 it was
   relative to the sparse run's (zero) offset.
 - `PyMftAttributeX30.logical_size` and `physical_size` are no longer swapped.
-- `$STANDARD_INFORMATION` attributes from NTFS 1.2 (72 bytes) report 0 for `owner_id`,
+- `$STANDARD_INFORMATION` attributes from NTFS 1.2 (48 bytes) report 0 for `owner_id`,
   `security_id`, `quota` and `usn` instead of reading past the attribute.
 - Named resident attributes (such as `$BITMAP:$SDH`) return their own value as `data`. With
   mft 0.7.0 it was read from the wrong offset.
