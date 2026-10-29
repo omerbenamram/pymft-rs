@@ -1,13 +1,9 @@
 """Python bindings for https://github.com/omerbenamram/mft."""
 
 import datetime
-from typing import BinaryIO, TypeAlias, final
+from typing import BinaryIO, NoReturn, final
 
 from typing_extensions import Self
-
-# Iterators yield the error object instead of raising it, so iteration can continue
-# past a broken entry or attribute: `OSError` for I/O failures, `RuntimeError` otherwise.
-_ParseError: TypeAlias = RuntimeError | OSError
 
 @final
 class PyMftParser:
@@ -17,9 +13,16 @@ class PyMftParser:
 
     A parser can be iterated any number of times, and `get_entry` reads one entry by
     number, including while an iteration is in progress. Threads can share a parser.
+
+    Iterating over entries or attributes raises `RuntimeError` or `OSError` for one that
+    fails to parse, after stepping past it, so `next()` can go on. With `skip_errors=True`
+    it is skipped instead, with a `RuntimeWarning` that `warnings` filters can count, log
+    or turn back into an error. Failing to read the file raises either way.
     """
 
-    def __new__(cls, path_or_file_like: str | BinaryIO) -> Self: ...
+    def __new__(
+        cls, path_or_file_like: str | BinaryIO, *, skip_errors: bool = False
+    ) -> Self: ...
     def number_of_entries(self) -> int:
         """Returns the total number of entries in the MFT."""
 
@@ -38,18 +41,19 @@ class PyMftParser:
         """Returns an iterator that yields mft entries as CSV lines (bytes)."""
 
     def __iter__(self) -> PyMftEntriesIterator: ...
-    def __next__(self) -> PyMftEntry | _ParseError: ...
+    def __next__(self) -> NoReturn:
+        """Raises `NotImplementedError`: iterate over `entries()` instead."""
 
 @final
 class PyMftEntriesIterator:
-    """Yields `PyMftEntry` objects from `entries()`, `str` from `entries_json()`,
-    `bytes` from `entries_csv()`, or a parse error in place of a broken entry.
+    """Yields `PyMftEntry` objects from `entries()`, `str` from `entries_json()` and
+    `bytes` from `entries_csv()`.
 
     Each iterator has its own position.
     """
 
     def __iter__(self) -> Self: ...
-    def __next__(self) -> PyMftEntry | str | bytes | _ParseError: ...
+    def __next__(self) -> PyMftEntry | str | bytes: ...
 
 @final
 class PyMftEntry:
@@ -78,7 +82,7 @@ class PyMftEntry:
 @final
 class PyMftAttributesIter:
     def __iter__(self) -> Self: ...
-    def __next__(self) -> PyMftAttribute | _ParseError: ...
+    def __next__(self) -> PyMftAttribute: ...
 
 @final
 class PyMftAttribute:
@@ -154,7 +158,7 @@ class PyMftAttributeX20:
 @final
 class PyMftX20EntriesIter:
     def __iter__(self) -> Self: ...
-    def __next__(self) -> PyMftAttributeX20Entry | _ParseError: ...
+    def __next__(self) -> PyMftAttributeX20Entry: ...
 
 @final
 class PyMftAttributeX20Entry:

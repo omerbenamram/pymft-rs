@@ -41,33 +41,28 @@ Run `pip install -e .`
 
 A parser can be iterated more than once, and `parser.get_entry(5)` reads a single entry by number.
 
-Note that the iterators created by `parser.entries()` and `entry.attributes()` may return `RuntimeError` objects if there was an error while trying
-to parse one of the attributes, so check them before continuing.
+Iterating raises the `RuntimeError` or `OSError` of an entry or attribute that fails to parse, after stepping past it.
+Pass `skip_errors=True` to skip them instead: each one skipped is reported as a `RuntimeWarning`, which
+[`warnings` filters](https://docs.python.org/3/library/warnings.html#the-warnings-filter) can count, log or turn back into errors.
+Failing to read the file raises either way, and so does reading an `attribute_content` that fails to parse.
 
 ```python
 from mft import PyMftParser, PyMftAttributeX10, PyMftAttributeX30
 
 def main():
-    parser = PyMftParser("/Users/omerba/Workspace/pymft-rs/samples/MFT")
-    for entry_or_error in parser.entries():
-        if isinstance(entry_or_error, RuntimeError):
-            continue
+    parser = PyMftParser("/Users/omerba/Workspace/pymft-rs/samples/MFT", skip_errors=True)
+    for entry in parser.entries():
+        print(f'Entry ID: {entry.entry_id}')
 
-        print(f'Entry ID: {entry_or_error.entry_id}')
-
-        for attribute_or_error in entry_or_error.attributes():
-            if isinstance(attribute_or_error, RuntimeError):
-                continue
-
-            resident_content = attribute_or_error.attribute_content
-            if resident_content:
-                if isinstance(resident_content, PyMftAttributeX10):
-                    print(f'Found an X10 attribute')
-                    print(f'Modified: {resident_content.modified}')
-                if isinstance(resident_content, PyMftAttributeX30):
-                    print(f'Found an X30 attribute')
-                    print(f'Modified: {resident_content.modified}')
-                    print(f'Name: {resident_content.name}')
+        for attribute in entry.attributes():
+            resident_content = attribute.attribute_content
+            if isinstance(resident_content, PyMftAttributeX10):
+                print(f'Found an X10 attribute')
+                print(f'Modified: {resident_content.modified}')
+            if isinstance(resident_content, PyMftAttributeX30):
+                print(f'Found an X30 attribute')
+                print(f'Modified: {resident_content.modified}')
+                print(f'Name: {resident_content.name}')
 
         print('--------------------------------')
 ```

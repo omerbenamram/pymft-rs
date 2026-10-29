@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
 use crate::ReadSeek;
-use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
 
 use crate::attribute::PyMftAttribute;
-use crate::err::PyMftError;
+use crate::err::skip_or_raise;
 use crate::utils::windows_path;
 use mft_rs::attribute::MftAttributeType;
 use mft_rs::{MftEntry, MftParser};
@@ -14,6 +13,8 @@ use mft_rs::{MftEntry, MftParser};
 pub struct PyMftEntry {
     // We need to keep inner entry to access it's attributes.
     inner: Arc<MftEntry>,
+    /// Whether `attributes()` skips the attributes that fail to parse, as the parser does.
+    skip_errors: bool,
     #[pyo3(get)]
     pub entry_id: u64,
     #[pyo3(get)]
@@ -53,32 +54,26 @@ pub struct PyMftEntry {
 
 #[pymethods]
 impl PyMftEntry {
-    pub fn attributes(&self) -> PyResult<Py<PyMftAttributesIter>> {
-        Python::attach(|py| {
-            let mut attributes = vec![];
+    pub fn attributes(&self, py: Python) -> PyResult<Py<PyMftAttributesIter>> {
+        // Only headers: content is parsed when `attribute_content` is read. A header that fails
+        // to parse is kept as its error, which the iterator raises or skips.
+        let mut attributes = Vec::new();
+        for record in self.inner.iter_attribute_records_matching(None) {
+            attributes.push(match record {
+                Ok((header, _)) => Ok(PyMftAttribute::from_header(py, &self.inner, &header)?),
+                // Boxed, as errors are rare and much bigger than an attribute's handle.
+                Err(error) => Err(Box::new(error)),
+            });
+        }
 
-            // Only headers: content is parsed when `attribute_content` is read.
-            for record in self.inner.iter_attribute_records_matching(None) {
-                match record {
-                    Ok((header, _)) => {
-                        match PyMftAttribute::from_header(py, &self.inner, &header)
-                            .and_then(|entry| entry.into_py_any(py))
-                        {
-                            Ok(obj) => attributes.push(obj),
-                            Err(e) => attributes.push(e.into_py_any(py).unwrap()),
-                        }
-                    }
-                    Err(e) => attributes.push(PyErr::from(PyMftError(e)).into_py_any(py).unwrap()),
-                }
-            }
-
-            Py::new(
-                py,
-                PyMftAttributesIter {
-                    inner: Box::new(attributes.into_iter()),
-                },
-            )
-        })
+        Py::new(
+            py,
+            PyMftAttributesIter {
+                entry_id: self.entry_id,
+                skip_errors: self.skip_errors,
+                inner: attributes.into_iter().enumerate(),
+            },
+        )
     }
 }
 
@@ -87,6 +82,7 @@ impl PyMftEntry {
         py: Python,
         entry: MftEntry,
         parser: &mut MftParser<impl ReadSeek>,
+        skip_errors: bool,
     ) -> PyResult<Py<PyMftEntry>> {
         let full_path = parser
             .get_full_path_for_entry(&entry)
@@ -115,6 +111,7 @@ impl PyMftEntry {
                 used_entry_size: entry.header.used_entry_size,
                 total_entry_size: entry.header.total_entry_size,
                 inner: Arc::new(entry),
+                skip_errors,
                 full_path,
                 file_size,
             },
@@ -124,7 +121,11 @@ impl PyMftEntry {
 
 #[pyclass(module = "mft")]
 pub struct PyMftAttributesIter {
-    inner: Box<dyn Iterator<Item = Py<PyAny>> + Send + Sync>,
+    entry_id: u64,
+    skip_errors: bool,
+    inner: std::iter::Enumerate<
+        std::vec::IntoIter<Result<Py<PyMftAttribute>, Box<mft_rs::err::Error>>>,
+    >,
 }
 
 #[pymethods]
@@ -133,14 +134,18 @@ impl PyMftAttributesIter {
         Ok(slf.into())
     }
 
-    fn __next__(mut slf: PyRefMut<Self>) -> PyResult<Option<Py<PyAny>>> {
-        slf.next()
-    }
-}
-
-impl PyMftAttributesIter {
-    fn next(&mut self) -> PyResult<Option<Py<PyAny>>> {
-        // Extract the result out of the iterator, so iteration will return error, but can continue.
-        Ok(self.inner.next())
+    fn __next__(&mut self, py: Python) -> PyResult<Option<Py<PyMftAttribute>>> {
+        for (index, attribute) in self.inner.by_ref() {
+            match attribute {
+                Ok(attribute) => return Ok(Some(attribute)),
+                Err(error) => skip_or_raise(
+                    py,
+                    self.skip_errors,
+                    format_args!("attribute {index} of entry {}", self.entry_id),
+                    *error,
+                )?,
+            }
+        }
+        Ok(None)
     }
 }

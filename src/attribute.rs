@@ -281,12 +281,12 @@ impl PyMftAttributeX20Entry {
 
 #[pyclass(module = "mft")]
 pub struct PyMftAttributeX20 {
-    entries: Vec<Py<PyAny>>,
+    entries: Vec<Py<PyMftAttributeX20Entry>>,
 }
 
 #[pyclass(module = "mft")]
 pub struct PyMftX20EntriesIter {
-    inner: Box<dyn Iterator<Item = Py<PyAny>> + Send + Sync>,
+    inner: std::vec::IntoIter<Py<PyMftAttributeX20Entry>>,
 }
 
 #[pymethods]
@@ -295,15 +295,8 @@ impl PyMftX20EntriesIter {
         Ok(slf.into())
     }
 
-    fn __next__(mut slf: PyRefMut<Self>) -> PyResult<Option<Py<PyAny>>> {
-        slf.next()
-    }
-}
-
-impl PyMftX20EntriesIter {
-    fn next(&mut self) -> PyResult<Option<Py<PyAny>>> {
-        // Extract the result out of the iterator, so iteration will return error, but can continue.
-        Ok(self.inner.next())
+    fn __next__(&mut self) -> Option<Py<PyMftAttributeX20Entry>> {
+        self.inner.next()
     }
 }
 
@@ -312,7 +305,7 @@ impl PyMftAttributeX20 {
         let entries = attr
             .entries
             .iter()
-            .map(|entry| PyMftAttributeX20Entry::from_x20_entry(py, entry)?.into_py_any(py))
+            .map(|entry| PyMftAttributeX20Entry::from_x20_entry(py, entry))
             .collect::<PyResult<_>>()?;
         Py::new(py, PyMftAttributeX20 { entries })
     }
@@ -320,21 +313,18 @@ impl PyMftAttributeX20 {
 
 #[pymethods]
 impl PyMftAttributeX20 {
-    pub fn entries(&self) -> PyResult<Py<PyMftX20EntriesIter>> {
-        Python::attach(|py| {
-            let attributes: Vec<Py<PyAny>> = self
-                .entries
-                .iter()
-                .map(|entry| entry.clone_ref(py))
-                .collect();
-
-            Py::new(
-                py,
-                PyMftX20EntriesIter {
-                    inner: Box::new(attributes.into_iter()),
-                },
-            )
-        })
+    pub fn entries(&self, py: Python) -> PyResult<Py<PyMftX20EntriesIter>> {
+        let entries: Vec<_> = self
+            .entries
+            .iter()
+            .map(|entry| entry.clone_ref(py))
+            .collect();
+        Py::new(
+            py,
+            PyMftX20EntriesIter {
+                inner: entries.into_iter(),
+            },
+        )
     }
 }
 

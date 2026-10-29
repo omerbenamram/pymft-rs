@@ -288,9 +288,6 @@ def check_entry(entry, expected):
     errors = 0
     parsed = []
     for attribute in entry.attributes():
-        if isinstance(attribute, Exception):
-            errors += 1
-            continue
         try:
             parsed.append((attribute, attribute.attribute_content))
         except (RuntimeError, OSError):
@@ -320,7 +317,6 @@ def test_python_fields_match_rust_json(sample: str):
     parser = PyMftParser(str(SAMPLES / sample))
     checked = 0
     for entry, expected in zip(parser.entries(), parser.entries_json(), strict=True):
-        assert not isinstance(entry, Exception), entry
         check_entry(entry, json.loads(expected))
         checked += 1
     assert checked > 0

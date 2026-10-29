@@ -1,4 +1,5 @@
 import datetime
+import io
 import itertools
 
 import pytest
@@ -6,6 +7,8 @@ import pytest
 from pathlib import Path
 
 from mft import PyMftParser, PyMftEntry
+
+ENTRY_SIZE = 1024
 
 
 @pytest.fixture
@@ -52,12 +55,10 @@ def test_datetimes_are_converted_properly(sample_mft: Path):
 def test_doesnt_yield_zeroed_entries(sample_mft: Path):
     parser = PyMftParser(str(sample_mft))
 
+    # Reading a zeroed record's attributes would raise.
     for entry in parser.entries():
-        try:
-            for attribute in entry.attributes():
-                print(entry.entry_id)
-        except RuntimeError as e:
-            assert False, (e, entry.entry_id)
+        for _attribute in entry.attributes():
+            pass
 
 
 
@@ -378,3 +379,85 @@ def test_get_entry_past_the_end(sample_mft: Path):
         parser.get_entry(parser.number_of_entries())
     with pytest.raises(IndexError):
         parser.get_entry(-1)
+
+
+@pytest.fixture
+def mft_with_a_bad_entry(sample_mft: Path, tmp_path: Path) -> Path:
+    """`samples/MFT` with entry 3's signature broken."""
+    data = bytearray(sample_mft.read_bytes())
+    data[3 * ENTRY_SIZE : 3 * ENTRY_SIZE + 4] = b"XXXX"
+    path = tmp_path / "MFT"
+    path.write_bytes(data)
+    return path
+
+
+@pytest.fixture
+def mft_with_a_bad_attribute(sample_mft: Path, tmp_path: Path) -> Path:
+    """`samples/MFT` with an unknown type code in entry 0's first attribute."""
+    data = bytearray(sample_mft.read_bytes())
+    first_attribute = int.from_bytes(data[0x14:0x16], "little")
+    data[first_attribute : first_attribute + 4] = (0x11).to_bytes(4, "little")
+    path = tmp_path / "MFT"
+    path.write_bytes(data)
+    return path
+
+
+def test_a_bad_entry_raises_and_iteration_goes_on(mft_with_a_bad_entry: Path):
+    entries = PyMftParser(str(mft_with_a_bad_entry)).entries()
+
+    assert [next(entries).entry_id for _ in range(3)] == [0, 1, 2]
+    with pytest.raises(RuntimeError, match="signature"):
+        next(entries)
+    assert next(entries).entry_id == 4
+
+
+@pytest.mark.parametrize("method", ["entries", "entries_json", "entries_csv"])
+def test_skip_errors_skips_a_bad_entry(mft_with_a_bad_entry: Path, method: str):
+    parser = PyMftParser(str(mft_with_a_bad_entry), skip_errors=True)
+
+    with pytest.warns(RuntimeWarning, match="^Skipping entry 3: RuntimeError: ") as record:
+        records = list(getattr(parser, method)())
+
+    assert len(record) == 1
+    # One fewer than the 13,068 entries of `samples/MFT` that aren't zeroed.
+    assert len(records) == 13_067
+
+
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+def test_skip_errors_warnings_can_be_errors(mft_with_a_bad_entry: Path):
+    parser = PyMftParser(str(mft_with_a_bad_entry), skip_errors=True)
+
+    with pytest.raises(RuntimeWarning, match="entry 3") as raised:
+        list(parser.entries())
+
+    assert isinstance(raised.value.__cause__, RuntimeError)
+
+
+def test_a_bad_attribute_raises_and_iteration_goes_on(mft_with_a_bad_attribute: Path):
+    attributes = PyMftParser(str(mft_with_a_bad_attribute)).get_entry(0).attributes()
+
+    with pytest.raises(RuntimeError, match="Unknown `AttributeType`"):
+        next(attributes)
+    assert [a.type_name for a in attributes] == ["FileName", "DATA", "BITMAP"]
+
+
+def test_skip_errors_skips_a_bad_attribute(mft_with_a_bad_attribute: Path):
+    entry = next(PyMftParser(str(mft_with_a_bad_attribute), skip_errors=True).entries())
+
+    with pytest.warns(RuntimeWarning, match="^Skipping attribute 0 of entry 0: "):
+        assert [a.type_name for a in entry.attributes()] == ["FileName", "DATA", "BITMAP"]
+
+
+def test_skip_errors_still_raises_read_errors(sample_mft: Path):
+    class FailingFile(io.BytesIO):
+        """Fails to read past the first 32 entries."""
+
+        def read(self, size: int | None = -1) -> bytes:
+            if self.tell() >= 32 * ENTRY_SIZE:
+                raise OSError("bad sector")
+            return super().read(size)
+
+    parser = PyMftParser(FailingFile(sample_mft.read_bytes()), skip_errors=True)
+
+    with pytest.raises(OSError, match="bad sector"):
+        list(parser.entries())
