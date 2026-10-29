@@ -122,15 +122,23 @@ class PyMftAttribute:
 
 @final
 class PyMftAttributeX10:
-    """$STANDARD_INFORMATION"""
+    """$STANDARD_INFORMATION: the file's timestamps and flags and, since NTFS 3.0, its quota
+    owner and charge, security id and update sequence number. The older layout lacks those four,
+    which read as 0. Its `raw_value` is 48 bytes long, and the newer layout's at least 72."""
 
     max_version: int
     version: int
     class_id: int
     owner_id: int
+    """The owner's key in `$Quota`, or 0 if the file has none."""
     security_id: int
+    """The key of the file's security descriptor in `$Secure`, or 0 if the descriptor is in the
+    file's own `$SECURITY_DESCRIPTOR`."""
     quota: int
+    """The bytes charged to the owner's quota, or 0 if none are."""
     usn: int
+    """The update sequence number of the last change journal (`$UsnJrnl`) record written for
+    the file, or 0 if none was."""
     @property
     def created(self) -> datetime.datetime: ...
     @property
@@ -140,7 +148,8 @@ class PyMftAttributeX10:
     @property
     def accessed(self) -> datetime.datetime: ...
     @property
-    def file_flags(self) -> str: ...
+    def file_flags(self) -> str:
+        """The file's `FILE_ATTRIBUTE_*` flags."""
     @property
     def file_flags_value(self) -> int:
         """`file_flags` as an integer."""

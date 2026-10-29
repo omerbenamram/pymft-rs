@@ -180,6 +180,9 @@ impl PyMftAttribute {
     }
 }
 
+/// $STANDARD_INFORMATION: the file's timestamps and flags and, since NTFS 3.0, its quota owner and
+/// charge, security id and update sequence number. The older layout lacks those four, which read
+/// as 0. Its `raw_value` is 48 bytes long, and the newer layout's at least 72.
 #[pyclass(module = "mft")]
 pub struct PyMftAttributeX10 {
     inner: StandardInfoAttr,
@@ -189,12 +192,18 @@ pub struct PyMftAttributeX10 {
     pub version: u32,
     #[pyo3(get)]
     pub class_id: u32,
+    /// The owner's key in `$Quota`, or 0 if the file has none.
     #[pyo3(get)]
     pub owner_id: u32,
+    /// The key of the file's security descriptor in `$Secure`, or 0 if the descriptor is in the
+    /// file's own `$SECURITY_DESCRIPTOR`.
     #[pyo3(get)]
     pub security_id: u32,
+    /// The bytes charged to the owner's quota, or 0 if none are.
     #[pyo3(get)]
     pub quota: u64,
+    /// The update sequence number of the last change journal (`$UsnJrnl`) record written for the
+    /// file, or 0 if none was.
     #[pyo3(get)]
     pub usn: u64,
 }
@@ -237,6 +246,7 @@ impl PyMftAttributeX10 {
         date_to_pyobject(&self.inner.accessed)
     }
 
+    /// The file's `FILE_ATTRIBUTE_*` flags.
     #[getter]
     pub fn file_flags(&self) -> PyResult<String> {
         Ok(self.inner.file_flags.to_string())
