@@ -22,10 +22,11 @@ use pyo3::prelude::*;
 use pyo3::sync::MutexExt;
 
 use crate::attribute::{
-    PyMftAttribute, PyMftAttributeNonResident, PyMftAttributeOther, PyMftAttributeX10,
-    PyMftAttributeX20, PyMftAttributeX20Entry, PyMftAttributeX30, PyMftAttributeX40,
-    PyMftAttributeX60, PyMftAttributeX70, PyMftAttributeX80, PyMftAttributeX90, PyMftAttributeXC0,
-    PyMftDataRun, PyMftIndexEntry, PyMftX20EntriesIter,
+    PyMftAce, PyMftAcl, PyMftAttribute, PyMftAttributeNonResident, PyMftAttributeOther,
+    PyMftAttributeX10, PyMftAttributeX20, PyMftAttributeX20Entry, PyMftAttributeX30,
+    PyMftAttributeX40, PyMftAttributeX50, PyMftAttributeX60, PyMftAttributeX70, PyMftAttributeX80,
+    PyMftAttributeX90, PyMftAttributeXC0, PyMftAttributeXD0, PyMftAttributeXE0, PyMftDataRun,
+    PyMftEaEntry, PyMftIndexEntry, PyMftViewIndexEntry, PyMftX20EntriesIter,
 };
 use crate::entry::PyMftAttributesIter;
 use crate::err::PyMftError;
@@ -301,12 +302,19 @@ fn mft(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMftX20EntriesIter>()?;
     m.add_class::<PyMftAttributeX30>()?;
     m.add_class::<PyMftAttributeX40>()?;
+    m.add_class::<PyMftAttributeX50>()?;
+    m.add_class::<PyMftAcl>()?;
+    m.add_class::<PyMftAce>()?;
     m.add_class::<PyMftAttributeX60>()?;
     m.add_class::<PyMftAttributeX70>()?;
     m.add_class::<PyMftAttributeX80>()?;
     m.add_class::<PyMftAttributeX90>()?;
     m.add_class::<PyMftAttributeXC0>()?;
     m.add_class::<PyMftIndexEntry>()?;
+    m.add_class::<PyMftViewIndexEntry>()?;
+    m.add_class::<PyMftAttributeXD0>()?;
+    m.add_class::<PyMftAttributeXE0>()?;
+    m.add_class::<PyMftEaEntry>()?;
     m.add_class::<PyMftAttributeNonResident>()?;
     m.add_class::<PyMftDataRun>()?;
     m.add_class::<PyMftAttributeOther>()?;

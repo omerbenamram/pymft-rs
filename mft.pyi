@@ -106,11 +106,14 @@ class PyMftAttribute:
         | PyMftAttributeX20
         | PyMftAttributeX30
         | PyMftAttributeX40
+        | PyMftAttributeX50
         | PyMftAttributeX60
         | PyMftAttributeX70
         | PyMftAttributeX80
         | PyMftAttributeX90
         | PyMftAttributeXC0
+        | PyMftAttributeXD0
+        | PyMftAttributeXE0
         | PyMftAttributeNonResident
         | PyMftAttributeOther
     ):
@@ -201,6 +204,54 @@ class PyMftAttributeX40:
     """Domain in which object was created."""
 
 @final
+class PyMftAttributeX50:
+    """$SECURITY_DESCRIPTOR: a resident security descriptor. Since NTFS 3.0 most files only
+    have a security id in `$STANDARD_INFORMATION`, and the descriptor is in `$Secure`."""
+
+    revision: int
+    control: str
+    control_value: int
+    """`control` as an integer."""
+    owner: str | None
+    """The owner, as a SID string (`S-1-5-18`), or `None` when the descriptor has none."""
+    group: str | None
+    sacl: PyMftAcl | None
+    """Only set when `control` has `SE_SACL_PRESENT`."""
+    dacl: PyMftAcl | None
+    """Only set when `control` has `SE_DACL_PRESENT`. A present flag without a DACL is a
+    NULL DACL, which grants everyone full access."""
+
+@final
+class PyMftAcl:
+    """An access control list."""
+
+    revision: int
+    def entries(self) -> list[PyMftAce]: ...
+
+@final
+class PyMftAce:
+    """An access control entry."""
+
+    ace_type: int
+    ace_type_name: str | None
+    """The name of a documented type (for example `ACCESS_ALLOWED`), without the
+    `_ACE_TYPE` suffix."""
+    flags: str
+    flags_value: int
+    """`flags` as an integer."""
+    access_mask: int | None
+    """`None` for types whose layout isn't decoded."""
+    object_type: str | None
+    """The object type of an object ACE, when its flags say it has one."""
+    inherited_object_type: str | None
+    """The inherited object type of an object ACE, when its flags say it has one."""
+    sid: str | None
+    @property
+    def data(self) -> bytes:
+        """The bytes after the decoded fields (for example a callback ACE's application
+        data), or the whole body for types whose layout isn't decoded."""
+
+@final
 class PyMftAttributeX60:
     """$VOLUME_NAME: the volume label."""
 
@@ -239,7 +290,11 @@ class PyMftAttributeX90:
     """Whether the index continues in `$INDEX_ALLOCATION` (only the entries in the
     index root are available here)."""
     def index_entries(self) -> list[PyMftIndexEntry]:
-        """The index entries stored in the index root itself."""
+        """The index entries stored in the index root itself, for a `$FILE_NAME` index
+        (`$I30`)."""
+    def view_entries(self) -> list[PyMftViewIndexEntry]:
+        """The index entries stored in the index root itself, for any other index (a view
+        index such as `$Secure:$SII` or `$Extend\\$Quota:$Q`)."""
 
 @final
 class PyMftIndexEntry:
@@ -252,6 +307,64 @@ class PyMftIndexEntry:
     flags: str
     fname_info: PyMftAttributeX30
     """The copy of the file's `$FILE_NAME` attribute kept in the index."""
+
+@final
+class PyMftViewIndexEntry:
+    """An entry of a view index: one of the indexes NTFS keeps in its metadata files,
+    recognized from the index's collation rule and the sizes of the entry's key and data.
+    `value_type` says which of the optional fields are set:
+
+    - `SecurityDescriptor` (`$Secure:$SDH` or `$Secure:$SII`): `hash`, `security_id`,
+      `sds_offset` and `sds_length`
+    - `ObjectId` (`$Extend\\$ObjId:$O`): `object_id`, `mft_reference_entry_id`,
+      `mft_reference_entry_sequence`, `birth_volume_id`, `birth_object_id` and `domain_id`
+    - `QuotaOwner` (`$Extend\\$Quota:$O`): `sid` and `owner_id`
+    - `Quota` (`$Extend\\$Quota:$Q`): `owner_id`, `version`, `quota_flags`, `bytes_used`,
+      `change_time`, `warning_limit` and `hard_limit`, and `exceeded_time` and `sid` when
+      the entry has them
+    - `Reparse` (`$Extend\\$Reparse:$R`): `tag`, `tag_name`, `mft_reference_entry_id` and
+      `mft_reference_entry_sequence`
+    - `Other` (any other index): `key` and `data`
+    """
+
+    flags: str
+    flags_value: int
+    """`flags` as an integer."""
+    value_type: str
+    hash: int | None
+    security_id: int | None
+    sds_offset: int | None
+    sds_length: int | None
+    object_id: str | None
+    mft_reference_entry_id: int | None
+    mft_reference_entry_sequence: int | None
+    birth_volume_id: str | None
+    birth_object_id: str | None
+    domain_id: str | None
+    sid: str | None
+    owner_id: int | None
+    version: int | None
+    quota_flags: int | None
+    bytes_used: int | None
+    warning_limit: int | None
+    """-1 means no limit."""
+    hard_limit: int | None
+    """-1 means no limit."""
+    tag: int | None
+    tag_name: str | None
+    """The name of a documented tag, as in `PyMftAttributeXC0.tag_name`."""
+    @property
+    def change_time(self) -> datetime.datetime | None:
+        """When the quota entry last changed."""
+    @property
+    def exceeded_time(self) -> datetime.datetime | None:
+        """When the owner went over their warning limit, if they did."""
+    @property
+    def key(self) -> bytes | None:
+        """The key of an `Other` entry."""
+    @property
+    def data(self) -> bytes | None:
+        """The data of an `Other` entry."""
 
 @final
 class PyMftAttributeXC0:
@@ -283,6 +396,52 @@ class PyMftAttributeXC0:
     def data(self) -> bytes | None:
         """The tag-specific data of an `Other` reparse point: the bytes after the reparse
         header (and the GUID of a third-party tag)."""
+
+@final
+class PyMftAttributeXD0:
+    """$EA_INFORMATION: the sizes of the file's extended attributes in `$EA`."""
+
+    packed_ea_size: int
+    """The size of the extended attributes in packed form: each one's flags, lengths, name
+    and value, without the next entry offsets and padding that `$EA` stores."""
+    need_ea_count: int
+    """How many extended attributes have the `NEED_EA` flag."""
+    unpacked_ea_size: int
+    """The size of the extended attributes as `$EA` stores them, which is the size of its
+    value."""
+
+@final
+class PyMftAttributeXE0:
+    """$EA: the file's extended attributes. Windows keeps its own metadata here too, such as
+    WSL's Linux owners and modes (`$LXUID`, `$LXGID`, `$LXMOD`, `$LXDEV`) and code
+    integrity's `$CI.CATALOGHINT`."""
+
+    def entries(self) -> list[PyMftEaEntry]: ...
+
+@final
+class PyMftEaEntry:
+    """One extended attribute. `value_type` says which of the optional fields are set:
+
+    - `LxInteger` (`$LXUID`, `$LXGID` or `$LXMOD`, a WSL file's Linux owner, group or
+      mode): `value`
+    - `LxDevice` (`$LXDEV`, the device numbers of a WSL device file): `major` and `minor`
+    - `CatalogHint` (`$CI.CATALOGHINT`, the security catalog that signs the file):
+      `catalog`
+    - `Other` (any other value, or one that doesn't match its name's layout): `data`
+    """
+
+    flags: str
+    flags_value: int
+    """`flags` as an integer."""
+    name: str
+    value_type: str
+    value: int | None
+    major: int | None
+    minor: int | None
+    catalog: str | None
+    @property
+    def data(self) -> bytes | None:
+        """The value of an `Other` entry."""
 
 @final
 class PyMftAttributeNonResident:

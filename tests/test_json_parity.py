@@ -17,11 +17,14 @@ from mft import (
     PyMftAttributeX20,
     PyMftAttributeX30,
     PyMftAttributeX40,
+    PyMftAttributeX50,
     PyMftAttributeX60,
     PyMftAttributeX70,
     PyMftAttributeX80,
     PyMftAttributeX90,
     PyMftAttributeXC0,
+    PyMftAttributeXD0,
+    PyMftAttributeXE0,
     PyMftParser,
 )
 
@@ -84,6 +87,63 @@ def check_file_name(content, data):
     check_times(content, data)
 
 
+def check_acl(acl, data):
+    if data is None:
+        assert acl is None
+        return
+    assert acl.revision == data["revision"]
+    for ace, expected in zip(acl.entries(), data["entries"], strict=True):
+        assert_fields(
+            ace,
+            expected,
+            "ace_type",
+            "ace_type_name",
+            "flags",
+            "access_mask",
+            "object_type",
+            "inherited_object_type",
+            "sid",
+        )
+        assert ace.data == bytes.fromhex(expected["data"])
+
+
+VIEW_ENTRY_FIELDS = (
+    "hash",
+    "security_id",
+    "sds_offset",
+    "sds_length",
+    "object_id",
+    "birth_volume_id",
+    "birth_object_id",
+    "domain_id",
+    "sid",
+    "owner_id",
+    "version",
+    "quota_flags",
+    "bytes_used",
+    "warning_limit",
+    "hard_limit",
+    "tag",
+    "tag_name",
+)
+
+
+def check_view_entry(entry, expected):
+    assert entry.flags == expected["flags"]
+    assert entry.value_type == expected["type"]
+    for field in VIEW_ENTRY_FIELDS:
+        assert getattr(entry, field) == expected.get(field), field
+    reference = expected.get("mft_reference")
+    assert entry.mft_reference_entry_id == (reference and reference["entry"])
+    assert entry.mft_reference_entry_sequence == (reference and reference["sequence"])
+    for field in ("change_time", "exceeded_time"):
+        value = expected.get(field)
+        assert getattr(entry, field) == (value and timestamp(value)), field
+    for field in ("key", "data"):
+        value = expected.get(field)
+        assert getattr(entry, field) == (None if value is None else bytes.fromhex(value)), field
+
+
 def check_content(content, data, header):
     if isinstance(content, PyMftAttributeX10):
         assert_fields(
@@ -111,6 +171,10 @@ def check_content(content, data, header):
         # The bindings give a missing id as "" rather than None.
         for field in ("birth_volume_id", "birth_object_id", "domain_id"):
             assert getattr(content, field) == (data[field] or ""), field
+    elif isinstance(content, PyMftAttributeX50):
+        assert_fields(content, data, "revision", "control", "owner", "group")
+        check_acl(content.sacl, data["sacl"])
+        check_acl(content.dacl, data["dacl"])
     elif isinstance(content, PyMftAttributeX60):
         assert_fields(content, data, "name")
     elif isinstance(content, PyMftAttributeX70):
@@ -136,6 +200,9 @@ def check_content(content, data, header):
             assert entry.mft_reference_entry_sequence == expected["mft_reference"]["sequence"]
             assert_fields(entry, expected, "index_record_length", "attr_fname_length", "flags")
             check_file_name(entry.fname_info, expected["fname_info"])
+        expected_views = data["index_entries"].get("view_entries", [])
+        for entry, expected in zip(content.view_entries(), expected_views, strict=True):
+            check_view_entry(entry, expected)
     elif isinstance(content, PyMftAttributeXC0):
         assert_fields(content, data, "tag", "tag_name", "guid")
         reparse = data["data"]
@@ -154,6 +221,19 @@ def check_content(content, data, header):
             assert content.data == bytes.fromhex(reparse["data"])
         else:
             assert content.data is None
+    elif isinstance(content, PyMftAttributeXD0):
+        assert_fields(content, data, "packed_ea_size", "need_ea_count", "unpacked_ea_size")
+    elif isinstance(content, PyMftAttributeXE0):
+        for entry, expected in zip(content.entries(), data["entries"], strict=True):
+            assert_fields(entry, expected, "flags", "name")
+            value = expected["value"]
+            assert entry.value_type == value["type"]
+            for field in ("value", "major", "minor", "catalog"):
+                assert getattr(entry, field) == value.get(field), field
+            if value["type"] == "Other":
+                assert entry.data == bytes.fromhex(value["data"])
+            else:
+                assert entry.data is None
     elif isinstance(content, PyMftAttributeNonResident):
         sizes = header["residential_header"]
         assert content.vcn_first == sizes["vnc_first"]
@@ -235,7 +315,7 @@ def check_entry(entry, expected):
         check_content(content, expected_attribute["data"], attr_header)
 
 
-@pytest.mark.parametrize("sample", ["MFT", "reparse_points"])
+@pytest.mark.parametrize("sample", ["MFT", "reparse_points", "entry_87354_extended_attributes"])
 def test_python_fields_match_rust_json(sample: str):
     parser = PyMftParser(str(SAMPLES / sample))
     checked = 0

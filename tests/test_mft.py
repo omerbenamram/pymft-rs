@@ -193,6 +193,91 @@ def test_reparse_points():
     assert wci.data == bytes.fromhex("01000000000000007a04b779e4f5ef428db10e504254f2c90000")
 
 
+def test_security_descriptor(sample_mft: Path):
+    # $Volume keeps its descriptor in the record.
+    descriptor = attribute_content(PyMftParser(str(sample_mft)).get_entry(3), 0x50)
+    assert descriptor.revision == 1
+    assert descriptor.control == "SE_DACL_PRESENT | SE_SELF_RELATIVE"
+    assert descriptor.control_value == 0x8004
+    assert (descriptor.owner, descriptor.group) == ("S-1-5-32-544", "S-1-5-32-544")
+    assert descriptor.sacl is None
+    assert descriptor.dacl.revision == 2
+    system, admins = descriptor.dacl.entries()
+    assert (system.ace_type, system.ace_type_name, system.sid) == (0, "ACCESS_ALLOWED", "S-1-5-18")
+    assert (system.flags, system.flags_value) == ("(empty)", 0)
+    assert system.access_mask == 0x12019F
+    assert system.object_type is None
+    assert system.data == b""
+    assert admins.sid == "S-1-5-32-544"
+
+
+def test_view_index_entries(sample_mft: Path):
+    parser = PyMftParser(str(sample_mft))
+
+    # $Secure: one entry in the root of each of its indexes.
+    sdh, sii = (
+        a.attribute_content.view_entries()
+        for a in parser.get_entry(9).attributes()
+        if a.type_code == 0x90
+    )
+    assert [(e.value_type, e.hash, e.security_id, e.sds_offset, e.sds_length) for e in sdh] == [
+        ("SecurityDescriptor", 0x8048FB19, 301, 9648, 236)
+    ]
+    assert (sdh[0].flags, sdh[0].flags_value) == ("INDEX_ENTRY_NODE", 1)
+    assert [(e.hash, e.security_id) for e in sii] == [(0x63D46E04, 305)]
+    assert sdh[0].owner_id is None and sdh[0].change_time is None and sdh[0].key is None
+
+    # $Extend\$Quota: the owner id of the Administrators SID, and the quota entries.
+    owners, quotas = (
+        a.attribute_content.view_entries()
+        for a in parser.get_entry(24).attributes()
+        if a.type_code == 0x90
+    )
+    assert [(e.value_type, e.sid, e.owner_id) for e in owners] == [
+        ("QuotaOwner", "S-1-5-32-544", 256)
+    ]
+    default, admins = quotas
+    assert (default.value_type, default.owner_id, default.sid) == ("Quota", 1, None)
+    assert (admins.owner_id, admins.sid) == (256, "S-1-5-32-544")
+    assert (admins.version, admins.quota_flags, admins.bytes_used) == (2, 1, 0)
+    assert (admins.warning_limit, admins.hard_limit) == (-1, -1)
+    assert admins.change_time == datetime.datetime(
+        2007, 6, 30, 12, 50, 53, 233806, tzinfo=datetime.timezone.utc
+    )
+    assert admins.exceeded_time is None
+
+    # $Extend\$ObjId
+    (object_id,) = attribute_content(parser.get_entry(25), 0x90).view_entries()
+    assert object_id.value_type == "ObjectId"
+    assert object_id.object_id == "9FE44B58-2709-11DC-A06B-DB3099BEAE3C"
+    assert (object_id.mft_reference_entry_id, object_id.mft_reference_entry_sequence) == (5321, 2)
+    assert object_id.birth_volume_id == "00000000-0000-0000-0000-000000000000"
+
+    # A directory's $I30 index has no view entries.
+    system32 = attribute_content(parser.get_entry(29), 0x90)
+    assert system32.view_entries() == []
+    assert system32.index_entries()
+
+
+def test_extended_attributes():
+    # Record 87354 (`Windows/System32/vm3dum64.dll`) of the Narcos Windows 10 $MFT (Digital
+    # Corpora, CC0).
+    path = Path(__file__).parent.parent / "samples" / "entry_87354_extended_attributes"
+    entry = next(PyMftParser(str(path)).entries())
+
+    info = attribute_content(entry, 0xD0)
+    assert (info.packed_ea_size, info.need_ea_count, info.unpacked_ea_size) == (168, 0, 180)
+
+    catalog_hint, cache = attribute_content(entry, 0xE0).entries()
+    assert (catalog_hint.name, catalog_hint.value_type) == ("$CI.CATALOGHINT", "CatalogHint")
+    assert catalog_hint.catalog == "oem10.cat"
+    assert (catalog_hint.flags, catalog_hint.flags_value) == ("(empty)", 0)
+    assert catalog_hint.data is None
+    assert (cache.name, cache.value_type, cache.catalog) == ("$KERNEL.PURGE.ESBCACHE", "Other", None)
+    assert len(cache.data) == 0x6C
+    assert cache.data[:4] == b"\x6c\x00\x00\x00"
+
+
 def test_entry_header_extras(sample_mft: Path):
     parser = PyMftParser(str(sample_mft))
 

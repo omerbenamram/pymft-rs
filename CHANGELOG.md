@@ -29,6 +29,17 @@ and this project adheres to
   `valid_data_length`, `total_allocated`), the VCN range it covers and `unit_compression_size`.
 - `PyMftAttributeX20Entry` has the extension record that holds each attribute
   (`segment_entry_id`, `segment_entry_sequence`).
+- `$SECURITY_DESCRIPTOR`, `$EA_INFORMATION` and `$EA` have their own content classes:
+  `PyMftAttributeX50` (revision, `control` flags, `owner` and `group` SIDs, and the `sacl` and
+  `dacl` as `PyMftAcl` objects whose `entries()` are `PyMftAce` objects), `PyMftAttributeXD0`
+  (`packed_ea_size`, `need_ea_count`, `unpacked_ea_size`) and `PyMftAttributeXE0`, whose
+  `entries()` are `PyMftEaEntry` objects with the name, flags and value. WSL's `$LXUID`,
+  `$LXGID`, `$LXMOD` and `$LXDEV` and code integrity's `$CI.CATALOGHINT` are decoded, and other
+  values keep their `data`.
+- `PyMftAttributeX90.view_entries()` lists the entries in the root of a view index, as
+  `PyMftViewIndexEntry` objects: `$Secure:$SDH` and `$SII`, `$Extend\$Quota:$O` and `$Q`,
+  `$Extend\$ObjId:$O` and `$Extend\$Reparse:$R` are decoded, and other indexes keep their
+  `key` and `data`.
 
 ### Changed
 
@@ -37,6 +48,8 @@ and this project adheres to
   instead of `PyMftAttributeOther`. The raw value is in the new `PyMftAttribute.raw_value`.
   The `data` of an undecoded reparse point is the bytes after its 8-byte header (and a
   third-party tag's GUID). A value too short to parse is still `PyMftAttributeOther`.
+- **Breaking:** the same goes for `$SECURITY_DESCRIPTOR`, `$EA_INFORMATION` and `$EA`, which
+  are now `PyMftAttributeX50`, `PyMftAttributeXD0` and `PyMftAttributeXE0`.
 - A `PyMftParser` can be iterated any number of times, and `number_of_entries()` works after
   iterating. Before, a second `entries()`, `entries_json()` or `entries_csv()` raised
   `RuntimeError: PyMftParser can only be used once`. Iterators share the parser, including its
