@@ -124,18 +124,20 @@ class PyMftAttribute:
 class PyMftAttributeX10:
     """$STANDARD_INFORMATION: the file's timestamps and flags and, since NTFS 3.0, its quota
     owner and charge, security id and update sequence number. The older layout lacks those four,
-    which read as 0. Its `raw_value` is 48 bytes long, and the newer layout's at least 72."""
+    which read as 0, and files can keep it on a newer volume. To tell the layouts apart, check
+    the length of the `raw_value` of the `PyMftAttribute` this came from: 48 bytes in the older
+    layout, at least 72 in the newer one. (Its `data_size` counts the attribute header too.)"""
 
     max_version: int
     version: int
     class_id: int
     owner_id: int
-    """The owner's key in `$Quota`, or 0 if the file has none."""
+    """The key of the file's owner in `$Quota`, or 0 if quotas are disabled."""
     security_id: int
-    """The key of the file's security descriptor in `$Secure`, or 0 if the descriptor is in the
-    file's own `$SECURITY_DESCRIPTOR`."""
+    """The key of the file's security descriptor in `$Secure`, or 0 if it has none there, such
+    as a file that kept its own `$SECURITY_DESCRIPTOR` from before NTFS 3.0."""
     quota: int
-    """The bytes charged to the owner's quota, or 0 if none are."""
+    """The bytes charged to the owner's quota, or 0 if quotas are disabled."""
     usn: int
     """The update sequence number of the last change journal (`$UsnJrnl`) record written for
     the file, or 0 if none was."""
