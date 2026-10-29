@@ -26,7 +26,7 @@ use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
 
 use crate::err::PyMftError;
-use crate::utils::{date_to_pyobject, flags_to_string};
+use crate::utils::date_to_pyobject;
 
 #[pyclass(module = "mft")]
 pub struct PyMftAttribute {
@@ -66,7 +66,7 @@ impl PyMftAttribute {
                 type_name: format!("{:?}", header.type_code),
                 type_code: header.type_code.to_u32().unwrap(),
                 name: header.name.to_utf8_string(),
-                data_flags: flags_to_string(&header.data_flags),
+                data_flags: header.data_flags.to_string(),
                 data_flags_value: header.data_flags.bits(),
                 is_resident: matches!(header.residential_header, ResidentialHeader::Resident(_)),
                 data_size: header.record_length,
@@ -239,7 +239,7 @@ impl PyMftAttributeX10 {
 
     #[getter]
     pub fn file_flags(&self) -> PyResult<String> {
-        Ok(flags_to_string(&self.inner.file_flags))
+        Ok(self.inner.file_flags.to_string())
     }
 
     /// `file_flags` as an integer.
@@ -407,7 +407,7 @@ impl PyMftAttributeX30 {
 
     #[getter]
     pub fn flags(&self) -> PyResult<String> {
-        Ok(flags_to_string(&self.file_flags))
+        Ok(self.file_flags.to_string())
     }
 
     /// `flags` as an integer.
@@ -495,7 +495,7 @@ impl PyMftAttributeX50 {
             py,
             PyMftAttributeX50 {
                 revision: attr.revision,
-                control: flags_to_string(&attr.control),
+                control: attr.control.to_string(),
                 control_value: attr.control.bits(),
                 owner: attr.owner.clone(),
                 group: attr.group.clone(),
@@ -573,7 +573,7 @@ impl PyMftAce {
             PyMftAce {
                 ace_type: ace.ace_type,
                 ace_type_name: ace.ace_type_name,
-                flags: flags_to_string(&ace.flags),
+                flags: ace.flags.to_string(),
                 flags_value: ace.flags.bits(),
                 access_mask: ace.access_mask,
                 object_type: ace.object_type.as_ref().map(ToString::to_string),
@@ -728,7 +728,7 @@ impl PyMftIndexEntry {
                 mft_reference_entry_sequence: entry.mft_reference.sequence,
                 index_record_length: entry.index_record_length,
                 attr_fname_length: entry.attr_fname_length,
-                flags: flags_to_string(&entry.flags),
+                flags: entry.flags.to_string(),
                 fname_info: PyMftAttributeX30::from_x30(py, &entry.fname_info)?,
             },
         )
@@ -809,7 +809,7 @@ pub struct PyMftViewIndexEntry {
 impl PyMftViewIndexEntry {
     pub fn from_view_entry(py: Python, entry: &ViewIndexEntry) -> PyResult<Py<Self>> {
         let base = PyMftViewIndexEntry {
-            flags: flags_to_string(&entry.flags),
+            flags: entry.flags.to_string(),
             flags_value: entry.flags.bits(),
             ..Default::default()
         };
@@ -1050,7 +1050,7 @@ impl PyMftAttributeX70 {
             PyMftAttributeX70 {
                 major_version: attr.major_version,
                 minor_version: attr.minor_version,
-                flags: flags_to_string(&attr.flags),
+                flags: attr.flags.to_string(),
                 flags_value: attr.flags.bits(),
             },
         )
@@ -1248,7 +1248,7 @@ pub struct PyMftEaEntry {
 impl PyMftEaEntry {
     pub fn from_ea_entry(py: Python, entry: &EaEntry) -> PyResult<Py<Self>> {
         let base = PyMftEaEntry {
-            flags: flags_to_string(&entry.flags),
+            flags: entry.flags.to_string(),
             flags_value: entry.flags.bits(),
             name: entry.name.to_string(),
             ..Default::default()

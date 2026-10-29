@@ -336,7 +336,6 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "mft"
 version = "0.8.0"
 dependencies = [
- "bitflags 2.13.2",
  "csv",
  "jiff",
  "log",
