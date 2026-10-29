@@ -339,7 +339,7 @@ dependencies = [
  "csv",
  "jiff",
  "log",
- "mft 0.8.0 (git+https://github.com/omerbenamram/mft?rev=8552b0dc7551ae90bced8513403f78a4806d6fad)",
+ "mft 0.9.0",
  "num-traits",
  "pyo3",
  "pyo3-build-config",
@@ -349,8 +349,9 @@ dependencies = [
 
 [[package]]
 name = "mft"
-version = "0.8.0"
-source = "git+https://github.com/omerbenamram/mft?rev=8552b0dc7551ae90bced8513403f78a4806d6fad#8552b0dc7551ae90bced8513403f78a4806d6fad"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57d80213b3f02c177e436ebee3440b044a4e7563af7188b5d938640bd18e4942"
 dependencies = [
  "bitflags 2.13.2",
  "byteorder",

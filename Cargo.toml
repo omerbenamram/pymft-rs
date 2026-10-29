@@ -13,7 +13,7 @@ default = ["extension-module"]
 extension-module = ["pyo3/extension-module"]
 
 [dependencies]
-mft_rs = { git = "https://github.com/omerbenamram/mft", rev = "8552b0dc7551ae90bced8513403f78a4806d6fad", default-features = false, package = "mft" }
+mft_rs = { version = "0.9.0", default-features = false, package = "mft" }
 pyo3 = { version = "0.30.1", features = ["abi3-py310"] }
 num-traits = "0.2"
 log = { version = "0.4", features = ["std"] }
