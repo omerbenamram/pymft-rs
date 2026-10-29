@@ -1,6 +1,6 @@
 [package]
 name = "mft"
-version = "0.9.0"
+version = "0.10.0"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
 edition = "2024"
 rust-version = "1.90"
@@ -13,7 +13,7 @@ default = ["extension-module"]
 extension-module = ["pyo3/extension-module"]
 
 [dependencies]
-mft_rs = { version = "0.9.0", default-features = false, package = "mft" }
+mft_rs = { version = "0.9.1", default-features = false, package = "mft" }
 pyo3 = { version = "0.30.1", features = ["abi3-py310"] }
 num-traits = "0.2"
 log = { version = "0.4", features = ["std"] }
