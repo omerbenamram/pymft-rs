@@ -16,7 +16,6 @@ use std::io;
 use std::io::{BufReader, Read, Seek};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use pyo3::IntoPyObjectExt;
 use pyo3::exceptions;
 use pyo3::prelude::*;
 use pyo3::sync::MutexExt;
@@ -29,7 +28,7 @@ use crate::attribute::{
     PyMftEaEntry, PyMftIndexEntry, PyMftViewIndexEntry, PyMftX20EntriesIter,
 };
 use crate::entry::PyMftAttributesIter;
-use crate::err::PyMftError;
+use crate::err::{PyMftError, skip_or_raise};
 use crate::utils::{FileOrFileLike, init_logging};
 use csv::WriterBuilder;
 use pyo3::types::{PyBytes, PyString};
@@ -65,7 +64,7 @@ pub enum Output {
 }
 
 #[pyclass(frozen, module = "mft")]
-/// PyMftParser(self, path_or_file_like, /)
+/// PyMftParser(self, path_or_file_like, *, skip_errors=False)
 /// --
 ///
 /// Returns an instance of the parser.
@@ -73,16 +72,23 @@ pub enum Output {
 ///
 /// A parser can be iterated any number of times, and its entries read by number with
 /// `get_entry`, including while an iteration is in progress.
+///
+/// Iterating over entries or attributes raises `RuntimeError` or `OSError` for one that fails to
+/// parse, after stepping past it, so `next()` can go on. With `skip_errors=True` it is skipped
+/// instead, with a `RuntimeWarning` that `warnings` filters can count, log or turn back into an
+/// error. Failing to read the file raises either way.
 pub struct PyMftParser {
     inner: SharedParser,
     /// Fixed once the parser is built, so reading it doesn't need the lock.
     entry_count: u64,
+    skip_errors: bool,
 }
 
 #[pymethods]
 impl PyMftParser {
     #[new]
-    fn new(path_or_file_like: Py<PyAny>) -> PyResult<Self> {
+    #[pyo3(signature = (path_or_file_like, *, skip_errors = false))]
+    fn new(path_or_file_like: Py<PyAny>, skip_errors: bool) -> PyResult<Self> {
         let file_or_file_like = FileOrFileLike::from_pyobject(path_or_file_like)?;
 
         let (boxed_read_seek, size) = match file_or_file_like {
@@ -105,6 +111,7 @@ impl PyMftParser {
         Ok(PyMftParser {
             entry_count: parser.get_entry_count(),
             inner: Arc::new(Mutex::new(parser)),
+            skip_errors,
         })
     }
 
@@ -136,7 +143,7 @@ impl PyMftParser {
         if &entry.header.signature == ZERO_HEADER {
             return Ok(None);
         }
-        PyMftEntry::from_mft_entry(py, entry, &mut parser).map(Some)
+        PyMftEntry::from_mft_entry(py, entry, &mut parser, self.skip_errors).map(Some)
     }
 
     /// entries(self, /)
@@ -187,6 +194,7 @@ impl PyMftParser {
                 current_record: 0,
                 output_format,
                 csv_header_written: false,
+                skip_errors: self.skip_errors,
             },
         )
     }
@@ -199,6 +207,7 @@ pub struct PyMftEntriesIterator {
     current_record: u64,
     output_format: Output,
     csv_header_written: bool,
+    skip_errors: bool,
 }
 
 #[pymethods]
@@ -206,59 +215,8 @@ impl PyMftEntriesIterator {
     fn __iter__(slf: PyRefMut<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
         Ok(slf.into())
     }
-    fn __next__(mut slf: PyRefMut<Self>) -> Option<Py<PyAny>> {
-        let py = slf.py();
-        slf.next(py)
-    }
-}
 
-impl PyMftEntriesIterator {
-    fn entry_to_pyobject(parser: &mut BoxedParser, entry: MftEntry, py: Python) -> Py<PyAny> {
-        match PyMftEntry::from_mft_entry(py, entry, parser).and_then(|entry| entry.into_py_any(py))
-        {
-            Ok(py_mft_entry) => py_mft_entry,
-            Err(e) => e.into_py_any(py).unwrap(),
-        }
-    }
-
-    fn entry_to_json(entry: MftEntry, py: Python) -> Py<PyAny> {
-        match sonic_rs::to_string(&entry) {
-            Ok(s) => PyString::new(py, &s).into_any().unbind(),
-            Err(_e) => PyErr::new::<exceptions::PyRuntimeError, _>("JSON Serialization failed")
-                .into_py_any(py)
-                .unwrap(),
-        }
-    }
-
-    fn entry_to_csv(
-        csv_header_written: &mut bool,
-        parser: &mut BoxedParser,
-        entry: MftEntry,
-        py: Python,
-    ) -> Py<PyAny> {
-        let mut writer = WriterBuilder::new()
-            .has_headers(!*csv_header_written)
-            .from_writer(Vec::new());
-        *csv_header_written = true;
-
-        if writer
-            .serialize(FlatMftEntryWithName::from_entry(&entry, parser))
-            .is_err()
-        {
-            return PyErr::new::<exceptions::PyRuntimeError, _>("CSV Serialization failed")
-                .into_py_any(py)
-                .unwrap();
-        }
-
-        match writer.into_inner() {
-            Ok(bytes) => PyBytes::new(py, &bytes).into_any().unbind(),
-            Err(e) => PyErr::new::<exceptions::PyRuntimeError, _>(e.to_string())
-                .into_py_any(py)
-                .unwrap(),
-        }
-    }
-
-    fn next(&mut self, py: Python) -> Option<Py<PyAny>> {
+    fn __next__(&mut self, py: Python) -> PyResult<Option<Py<PyAny>>> {
         let mut parser = lock_parser(&self.inner, py);
         while self.current_record < self.total_number_of_records {
             let id = self.current_record;
@@ -267,17 +225,61 @@ impl PyMftEntriesIterator {
             let entry = match parser.get_entry(id) {
                 Ok(entry) if &entry.header.signature == ZERO_HEADER => continue,
                 Ok(entry) => entry,
-                Err(error) => return Some(PyErr::from(PyMftError(error)).into_py_any(py).unwrap()),
+                // The file failed to read, which skipping the entry doesn't fix.
+                Err(error @ mft_rs::err::Error::IoError { .. }) => {
+                    return Err(PyMftError(error).into());
+                }
+                Err(error) => {
+                    // Unlocked while warning, as a `warnings` hook may use the parser.
+                    drop(parser);
+                    skip_or_raise(py, self.skip_errors, format_args!("entry {id}"), error)?;
+                    parser = lock_parser(&self.inner, py);
+                    continue;
+                }
             };
-            return Some(match self.output_format {
-                Output::Python => Self::entry_to_pyobject(&mut parser, entry, py),
+            return match self.output_format {
+                Output::Python => {
+                    PyMftEntry::from_mft_entry(py, entry, &mut parser, self.skip_errors)
+                        .map(Py::into_any)
+                }
                 Output::JSON => Self::entry_to_json(entry, py),
                 Output::CSV => {
                     Self::entry_to_csv(&mut self.csv_header_written, &mut parser, entry, py)
                 }
-            });
+            }
+            .map(Some);
         }
-        None
+        Ok(None)
+    }
+}
+
+impl PyMftEntriesIterator {
+    fn entry_to_json(entry: MftEntry, py: Python) -> PyResult<Py<PyAny>> {
+        let json = sonic_rs::to_string(&entry).map_err(|_| {
+            PyErr::new::<exceptions::PyRuntimeError, _>("JSON Serialization failed")
+        })?;
+        Ok(PyString::new(py, &json).into_any().unbind())
+    }
+
+    fn entry_to_csv(
+        csv_header_written: &mut bool,
+        parser: &mut BoxedParser,
+        entry: MftEntry,
+        py: Python,
+    ) -> PyResult<Py<PyAny>> {
+        let mut writer = WriterBuilder::new()
+            .has_headers(!*csv_header_written)
+            .from_writer(Vec::new());
+
+        writer
+            .serialize(FlatMftEntryWithName::from_entry(&entry, parser))
+            .map_err(|_| PyErr::new::<exceptions::PyRuntimeError, _>("CSV Serialization failed"))?;
+        let bytes = writer
+            .into_inner()
+            .map_err(|e| PyErr::new::<exceptions::PyRuntimeError, _>(e.to_string()))?;
+        // Only now, so the header goes with the next record if this one failed.
+        *csv_header_written = true;
+        Ok(PyBytes::new(py, &bytes).into_any().unbind())
     }
 }
 

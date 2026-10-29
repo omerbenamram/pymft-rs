@@ -8,6 +8,21 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `PyMftParser(..., skip_errors=True)` skips the entries and attributes that fail to parse, with
+  a `RuntimeWarning` for each one, as pyevtx 0.14.0 does. `warnings` filters can count or log
+  them, or turn them back into errors.
+
+### Changed
+
+- **Breaking:** iterating over `entries()`, `entries_json()`, `entries_csv()` or
+  `PyMftEntry.attributes()` raises the `RuntimeError` or `OSError` of an entry or attribute that
+  fails to parse, instead of yielding it in its place. The iterator steps past it first, so
+  `next()` can go on. A loop that skipped the yielded errors can pass `skip_errors=True` instead.
+  Failing to read the file raises either way. The stubs' `__next__` types no longer include the
+  errors.
+
 ## [0.9.0] - 2026-10-29
 
 ### Added
