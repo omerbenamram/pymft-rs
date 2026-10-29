@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-29
+
 ### Added
 
 - `PyMftParser(..., skip_errors=True)` skips the entries and attributes that fail to parse, with
@@ -22,6 +24,9 @@ and this project adheres to
   `next()` can go on. A loop that skipped the yielded errors can pass `skip_errors=True` instead.
   Failing to read the file raises either way. The stubs' `__next__` types no longer include the
   errors.
+- Built on mft 0.9.1. It resolves `full_path` with 56–66% less work on large MFTs, and on a
+  corrupt MFT whose parent references loop, `full_path` no longer depends on the order entries
+  are read in.
 
 ## [0.9.0] - 2026-10-29
 

@@ -334,24 +334,9 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mft"
-version = "0.9.0"
-dependencies = [
- "csv",
- "jiff",
- "log",
- "mft 0.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "num-traits",
- "pyo3",
- "pyo3-build-config",
- "pyo3-file",
- "sonic-rs",
-]
-
-[[package]]
-name = "mft"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57d80213b3f02c177e436ebee3440b044a4e7563af7188b5d938640bd18e4942"
+checksum = "fc80594f57cb7145535dc08d3ee0aabfb6005e45de3961ffb50c29647ad72cab"
 dependencies = [
  "bitflags 2.13.2",
  "byteorder",
@@ -368,6 +353,21 @@ dependencies = [
  "thiserror 2.0.21",
  "utf16-simd",
  "winstructs",
+]
+
+[[package]]
+name = "mft"
+version = "0.10.0"
+dependencies = [
+ "csv",
+ "jiff",
+ "log",
+ "mft 0.9.1",
+ "num-traits",
+ "pyo3",
+ "pyo3-build-config",
+ "pyo3-file",
+ "sonic-rs",
 ]
 
 [[package]]
