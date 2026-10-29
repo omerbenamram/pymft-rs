@@ -334,12 +334,12 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mft"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "csv",
  "jiff",
  "log",
- "mft 0.9.0",
+ "mft 0.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "num-traits",
  "pyo3",
  "pyo3-build-config",

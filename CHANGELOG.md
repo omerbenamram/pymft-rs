@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-29
+
 ### Added
 
 - `PyMftParser.get_entry(entry_id)` reads one entry by number, with its `full_path`. It returns
@@ -43,6 +45,7 @@ and this project adheres to
 
 ### Changed
 
+- Built on mft 0.9.0.
 - **Breaking:** `attribute_content` of `$VOLUME_NAME`, `$VOLUME_INFORMATION` and
   `$REPARSE_POINT` is now `PyMftAttributeX60`, `PyMftAttributeX70` or `PyMftAttributeXC0`
   instead of `PyMftAttributeOther`. The raw value is in the new `PyMftAttribute.raw_value`.

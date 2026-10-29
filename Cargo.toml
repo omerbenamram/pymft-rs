@@ -1,6 +1,6 @@
 [package]
 name = "mft"
-version = "0.8.0"
+version = "0.9.0"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
 edition = "2024"
 rust-version = "1.90"
