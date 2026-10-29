@@ -21,6 +21,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Check CHANGELOG.md has notes for the Cargo.toml version
+        run: |
+          VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          scripts/release-notes.sh "$VERSION" > /dev/null
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -199,11 +203,37 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     needs: [lint, linux, linux-cross, windows, macos, sdist]
+    permissions:
+      contents: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
+      # Before PyPI, which can't be undone.
+      - name: Publish GitHub releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Creates the missing release of each `v` tag in this history, with its CHANGELOG.md
+          # notes. Only this tag's gets the files. HIGHEST counts every tag, not just this
+          # history's, so that a backport is never marked latest.
+          RELEASED="$(gh release list --limit 1000 --json tagName --jq '.[].tagName')"
+          HIGHEST="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          for TAG in $(git tag --list 'v*' --merged HEAD --sort=v:refname); do
+            if grep -qxF "$TAG" <<<"$RELEASED"; then continue; fi
+            scripts/release-notes.sh "${TAG#v}" > notes.md
+            FILES=()
+            if [ "$TAG" = "$GITHUB_REF_NAME" ]; then FILES=(dist/*); fi
+            LATEST=false
+            if [ "$TAG" = "$HIGHEST" ]; then LATEST=true; fi
+            gh release create "$TAG" "${FILES[@]}" --verify-tag --title "$TAG" \
+              --notes-file notes.md --latest="$LATEST"
+          done
       - uses: astral-sh/setup-uv@v10.3.2
       - name: Publish to PyPI
         env:

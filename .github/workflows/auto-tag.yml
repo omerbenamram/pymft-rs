@@ -2,15 +2,12 @@ name: Auto-tag
 
 # Merging a release PR (one that bumps the version in Cargo.toml) tags that commit
 # `vX.Y.Z` and runs ci.yml on the tag, which builds and publishes the wheels. Other pushes find
-# the tag already exists and stop. Changes to this file run it too, so a fix to it can still
-# tag a version whose release PR already merged.
+# the tag already exists and stop. A version without notes in CHANGELOG.md isn't tagged until a
+# push adds them.
 on:
   push:
     branches:
       - master
-    paths:
-      - Cargo.toml
-      - .github/workflows/auto-tag.yml
 
 permissions:
   contents: write
@@ -40,6 +37,7 @@ jobs:
             echo "$TAG already exists, nothing to release"
             exit 0
           fi
+          scripts/release-notes.sh "$VERSION" > /dev/null
           git -c user.name="github-actions[bot]" \
               -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
               tag -a "$TAG" -m "$TAG" "$GITHUB_SHA"
