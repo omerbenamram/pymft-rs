@@ -50,6 +50,8 @@ pub struct PyMftAttribute {
     pub data_flags_value: u16,
     #[pyo3(get)]
     pub is_resident: bool,
+    /// The length of the attribute's record, header included, which `entries_json()` calls
+    /// `record_length`. A resident attribute's value is `raw_value`.
     #[pyo3(get)]
     pub data_size: u32,
 }
@@ -180,6 +182,11 @@ impl PyMftAttribute {
     }
 }
 
+/// $STANDARD_INFORMATION: the file's timestamps and flags and, since NTFS 3.0, its quota owner,
+/// quota charge, security id and update sequence number. The older layout lacks those four, which
+/// read as 0. Files can keep that layout on a newer volume. To tell the layouts apart, check the
+/// length of the `raw_value` of the `PyMftAttribute` this came from: 48 bytes in the older layout,
+/// at least 72 in the newer one. Not its `data_size`, which is at least 72 in both.
 #[pyclass(module = "mft")]
 pub struct PyMftAttributeX10 {
     inner: StandardInfoAttr,
@@ -189,12 +196,21 @@ pub struct PyMftAttributeX10 {
     pub version: u32,
     #[pyo3(get)]
     pub class_id: u32,
+    /// The key of the file's owner in `$Extend\$Quota`. 0 if quotas have never been enabled on
+    /// the volume, or in the older layout.
     #[pyo3(get)]
     pub owner_id: u32,
+    /// The key of the file's security descriptor in `$Secure`. 0 for a file with no descriptor
+    /// there (for example one with its own `$SECURITY_DESCRIPTOR`), or in the older layout.
     #[pyo3(get)]
     pub security_id: u32,
+    /// The bytes charged to the owner's quota. 0 if quotas have never been enabled on the volume,
+    /// or in the older layout.
     #[pyo3(get)]
     pub quota: u64,
+    /// The update sequence number of the file's last change journal (`$Extend\$UsnJrnl`) record,
+    /// which may no longer be in the journal. 0 if the file has had no record since the journal
+    /// was created, or in the older layout.
     #[pyo3(get)]
     pub usn: u64,
 }
@@ -237,6 +253,7 @@ impl PyMftAttributeX10 {
         date_to_pyobject(&self.inner.accessed)
     }
 
+    /// The file's `FILE_ATTRIBUTE_*` flags.
     #[getter]
     pub fn file_flags(&self) -> PyResult<String> {
         Ok(self.inner.file_flags.to_string())

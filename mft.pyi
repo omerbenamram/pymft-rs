@@ -97,6 +97,8 @@ class PyMftAttribute:
     """`data_flags` as an integer."""
     is_resident: bool
     data_size: int
+    """The length of the attribute's record, header included, which `entries_json()` calls
+    `record_length`. A resident attribute's value is `raw_value`."""
     @property
     def raw_value(self) -> bytes | None:
         """The value of a resident attribute as stored in the record, or `None` for a
@@ -126,15 +128,29 @@ class PyMftAttribute:
 
 @final
 class PyMftAttributeX10:
-    """$STANDARD_INFORMATION"""
+    """$STANDARD_INFORMATION: the file's timestamps and flags and, since NTFS 3.0, its quota
+    owner, quota charge, security id and update sequence number. The older layout lacks those
+    four, which read as 0. Files can keep that layout on a newer volume. To tell the layouts
+    apart, check the length of the `raw_value` of the `PyMftAttribute` this came from: 48 bytes
+    in the older layout, at least 72 in the newer one. Not its `data_size`, which is at least 72
+    in both."""
 
     max_version: int
     version: int
     class_id: int
     owner_id: int
+    """The key of the file's owner in `$Extend\\$Quota`. 0 if quotas have never been enabled
+    on the volume, or in the older layout."""
     security_id: int
+    """The key of the file's security descriptor in `$Secure`. 0 for a file with no descriptor
+    there (for example one with its own `$SECURITY_DESCRIPTOR`), or in the older layout."""
     quota: int
+    """The bytes charged to the owner's quota. 0 if quotas have never been enabled on the
+    volume, or in the older layout."""
     usn: int
+    """The update sequence number of the file's last change journal (`$Extend\\$UsnJrnl`)
+    record, which may no longer be in the journal. 0 if the file has had no record since the
+    journal was created, or in the older layout."""
     @property
     def created(self) -> datetime.datetime: ...
     @property
@@ -144,7 +160,8 @@ class PyMftAttributeX10:
     @property
     def accessed(self) -> datetime.datetime: ...
     @property
-    def file_flags(self) -> str: ...
+    def file_flags(self) -> str:
+        """The file's `FILE_ATTRIBUTE_*` flags."""
     @property
     def file_flags_value(self) -> int:
         """`file_flags` as an integer."""
