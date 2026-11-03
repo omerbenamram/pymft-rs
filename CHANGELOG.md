@@ -8,6 +8,15 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-03
+
+### Fixed
+
+- Built on mft 0.9.2: a file whose parent directory's record was reused for another file now has
+  the path `[Orphaned]\<name>`, instead of a path through the record's new file (or
+  `[Unknown]\<name>` when that file isn't a directory). Deleted files in a deleted directory keep
+  that directory's path.
+
 ## [0.10.0] - 2026-10-29
 
 ### Added
