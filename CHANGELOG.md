@@ -15,6 +15,9 @@ and this project adheres to
 
 ### Changed
 
+- `full_path` is built 15–20% faster on Linux and macOS: iterating `entries()` over a 78k-entry
+  MFT and reading each `full_path` went from 0.16 to 0.13 s. Paths are identical on all 33 sample
+  MFTs.
 - **Breaking:** `PyMftAttributeX40.birth_volume_id`, `birth_object_id` and `domain_id` are `None`
   when the `$OBJECT_ID` holds only the object id (16 bytes, as on all 73 in `samples/MFT`),
   instead of `""`, like mft's JSON `null`. Code that tests `== ""` should test `is None`.
