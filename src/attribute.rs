@@ -430,14 +430,14 @@ pub struct PyMftAttributeX40 {
     /// Unique Id assigned to file
     pub object_id: String,
     #[pyo3(get)]
-    /// Volume where file was created
-    pub birth_volume_id: String,
+    /// Volume where file was created, or None if the attribute holds only the object id
+    pub birth_volume_id: Option<String>,
     #[pyo3(get)]
-    /// Original Object Id of file
-    pub birth_object_id: String,
+    /// Original Object Id of file, or None if the attribute holds only the object id
+    pub birth_object_id: Option<String>,
     #[pyo3(get)]
-    /// Domain in which object was created
-    pub domain_id: String,
+    /// Domain in which object was created, or None if the attribute holds only the object id
+    pub domain_id: Option<String>,
 }
 
 impl PyMftAttributeX40 {
@@ -446,21 +446,9 @@ impl PyMftAttributeX40 {
             py,
             PyMftAttributeX40 {
                 object_id: attr.object_id.to_string(),
-                birth_volume_id: attr
-                    .birth_volume_id
-                    .as_ref()
-                    .map(|a| a.to_string())
-                    .unwrap_or_default(),
-                birth_object_id: attr
-                    .birth_object_id
-                    .as_ref()
-                    .map(|a| a.to_string())
-                    .unwrap_or_default(),
-                domain_id: attr
-                    .domain_id
-                    .as_ref()
-                    .map(|a| a.to_string())
-                    .unwrap_or_default(),
+                birth_volume_id: attr.birth_volume_id.map(|a| a.to_string()),
+                birth_object_id: attr.birth_object_id.map(|a| a.to_string()),
+                domain_id: attr.domain_id.map(|a| a.to_string()),
             },
         )
     }
@@ -636,6 +624,9 @@ pub struct PyMftAttributeX90 {
     /// If type is $FILENAME, this must be COLLATION_FILENAME
     pub collation_rule: u32,
     #[pyo3(get)]
+    /// The name of `collation_rule`, such as "CollationFilename"
+    pub collation_rule_name: String,
+    #[pyo3(get)]
     /// The index entry size
     pub index_entry_size: u32,
     #[pyo3(get)]
@@ -675,6 +666,7 @@ impl PyMftAttributeX90 {
             PyMftAttributeX90 {
                 attribute_type: attr.attribute_type,
                 collation_rule: attr.collation_rule as u32,
+                collation_rule_name: format!("{:?}", attr.collation_rule),
                 index_entry_size: attr.index_entry_size,
                 index_entry_number_of_cluster_blocks: attr.index_entry_number_of_cluster_blocks,
                 relative_offset_to_index_node: attr.relative_offset_to_index_node,
