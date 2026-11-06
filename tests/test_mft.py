@@ -467,7 +467,8 @@ def test_entries_bodyfile(sample_mft: Path):
     parser = PyMftParser(str(sample_mft))
     chunks = list(parser.entries_bodyfile())
 
-    lines = "".join(chunks).splitlines()
+    # Split on "\n" only: names can hold U+2028 and other characters `splitlines` breaks on.
+    lines = "".join(chunks).split("\n")[:-1]
     assert len(lines) == 26132
     # MD5|name|inode|mode|UID|GID|size|atime|mtime|ctime|crtime
     assert lines[0].split("|")[:3] == ["0", "/$MFT ($FILE_NAME)", "0-48-3"]
@@ -493,6 +494,9 @@ def test_data_streams(sample_mft: Path):
     # An all-zero record.
     assert parser.get_entry(16) is None
     assert parser.data_streams(16) == []
+
+    # The extension record's stream belongs to file 12938, listed above.
+    assert parser.data_streams(12940) == []
 
     with pytest.raises(IndexError):
         parser.data_streams(parser.number_of_entries())

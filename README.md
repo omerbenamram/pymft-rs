@@ -98,7 +98,7 @@ from mft import PyMftParser
 
 parser = PyMftParser("samples/MFT")
 
-with open("mft.body", "w", newline="") as body:
+with open("mft.body", "w", encoding="utf-8", newline="") as body:
     body.writelines(parser.entries_bodyfile())
 
 for stream in parser.data_streams(12938):

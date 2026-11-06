@@ -8,6 +8,7 @@ mod utils;
 pub(crate) mod err;
 pub use entry::PyMftEntry;
 use mft_rs::attribute::MftAttributeType;
+use mft_rs::attribute::header::ResidentialHeader;
 use mft_rs::csv::FlatMftEntryWithName;
 use mft_rs::entry::ZERO_HEADER;
 use mft_rs::{MftEntry, MftParser};
@@ -181,13 +182,15 @@ impl PyMftParser {
     /// stored in its extension records: the unnamed stream first, then the named ones
     /// (alternate data streams), in the order they are stored. A resident stream carries its
     /// content in `data`. A non-resident one has `data=None`, since its content is on the volume
-    /// rather than in the MFT. An all-zero record has none. Raises `IndexError` like `get_entry`.
+    /// rather than in the MFT. An all-zero record and an extension record have none (ask for its
+    /// base record). Raises `IndexError` like `get_entry`.
     fn data_streams(&self, py: Python, entry_id: i64) -> PyResult<Vec<Py<PyMftDataStream>>> {
         let entry_id = self.check_entry_id(entry_id)?;
         let mut parser = lock_parser(&self.inner, py);
         let entry = parser.get_entry(entry_id).map_err(PyMftError)?;
-        // An all-zero record, which `get_entry` returns as `None`.
-        if &entry.header.signature == ZERO_HEADER {
+        // An all-zero record (which `get_entry` returns as `None`) has none, and an extension
+        // record's streams belong to the file of its base record.
+        if &entry.header.signature == ZERO_HEADER || !entry.header.is_base_record() {
             return Ok(Vec::new());
         }
         let extensions = parser.get_extension_entries(&entry);
@@ -195,37 +198,44 @@ impl PyMftParser {
 
         let mut streams = Vec::new();
         for record in std::iter::once(&entry).chain(&extensions) {
-            for attribute in record.iter_attributes_matching(Some(vec![MftAttributeType::DATA])) {
-                let attribute = match attribute {
+            let record_number = record.header.record_number;
+            // Only the header is parsed, so a non-resident stream whose data runs don't decode
+            // still gets listed: its content isn't read here anyway.
+            for attribute in
+                record.iter_attribute_records_matching(Some(vec![MftAttributeType::DATA]))
+            {
+                let what = format_args!("a $DATA attribute of entry {record_number}");
+                let (header, attribute_record) = match attribute {
                     Ok(attribute) => attribute,
                     Err(error) => {
-                        skip_or_raise(
-                            py,
-                            self.skip_errors,
-                            format_args!(
-                                "a $DATA attribute of entry {}",
-                                record.header.record_number
-                            ),
-                            error,
-                        )?;
+                        skip_or_raise(py, self.skip_errors, what, error)?;
                         continue;
                     }
                 };
                 // The later pieces of a fragmented non-resident stream.
-                if attribute.header.is_continuation() {
+                if header.is_continuation() {
                     continue;
                 }
+                let data = match &header.residential_header {
+                    ResidentialHeader::Resident(resident) => {
+                        match resident.value(attribute_record) {
+                            Ok(value) => Some(PyBytes::new(py, value).unbind()),
+                            Err(error) => {
+                                skip_or_raise(py, self.skip_errors, what, error)?;
+                                continue;
+                            }
+                        }
+                    }
+                    ResidentialHeader::NonResident(_) => None,
+                };
                 streams.push(Py::new(
                     py,
                     PyMftDataStream {
-                        name: attribute.header.name.to_string(),
-                        size: attribute.header.value_size(),
-                        record_entry_id: record.header.record_number,
-                        attribute_id: attribute.header.instance,
-                        data: attribute
-                            .data
-                            .as_data()
-                            .map(|data| PyBytes::new(py, data.data()).unbind()),
+                        name: header.name.to_string(),
+                        size: header.value_size(),
+                        record_entry_id: record_number,
+                        attribute_id: header.instance,
+                        data,
                     },
                 )?);
             }
@@ -313,24 +323,22 @@ impl PyMftEntriesIterator {
                     continue;
                 }
             };
-            if let Output::Bodyfile = self.output_format {
-                match Self::entry_to_bodyfile(&mut parser, &entry, py)? {
-                    Some(lines) => return Ok(Some(lines)),
-                    None => continue,
-                }
-            }
-            return match self.output_format {
+            let item = match self.output_format {
                 Output::Python => {
                     PyMftEntry::from_mft_entry(py, entry, &mut parser, self.skip_errors)
-                        .map(Py::into_any)
+                        .map(|entry| Some(entry.into_any()))
                 }
-                Output::JSON => Self::entry_to_json(entry, py),
+                Output::JSON => Self::entry_to_json(entry, py).map(Some),
                 Output::CSV => {
                     Self::entry_to_csv(&mut self.csv_header_written, &mut parser, entry, py)
+                        .map(Some)
                 }
-                Output::Bodyfile => unreachable!("handled above"),
+                // `None` for an entry without bodyfile lines, which is skipped.
+                Output::Bodyfile => Self::entry_to_bodyfile(&mut parser, &entry, py),
+            }?;
+            if item.is_some() {
+                return Ok(item);
             }
-            .map(Some);
         }
         Ok(None)
     }

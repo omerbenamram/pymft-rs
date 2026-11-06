@@ -50,8 +50,8 @@ class PyMftParser:
         ones stored in its extension records: the unnamed stream first, then the named ones
         (alternate data streams), in the order they are stored. A resident stream carries
         its content in `data`. A non-resident one has `data=None`, since its content is on
-        the volume rather than in the MFT. An all-zero record has none. Raises `IndexError`
-        like `get_entry`."""
+        the volume rather than in the MFT. An all-zero record and an extension record have
+        none (ask for its base record). Raises `IndexError` like `get_entry`."""
 
     def __iter__(self) -> PyMftEntriesIterator: ...
     def __next__(self) -> NoReturn:
