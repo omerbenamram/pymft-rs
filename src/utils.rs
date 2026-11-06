@@ -132,10 +132,10 @@ pub fn date_to_pyobject(date: &Timestamp) -> PyResult<Py<PyAny>> {
 pub fn windows_path(path: &Path) -> String {
     // mft builds the path by pushing one name per component, so on a `/` host the separators
     // are the only `/` in it (NTFS names can't hold one) and swapping them is enough.
-    if std::path::MAIN_SEPARATOR == '/' {
-        if let Some(path) = path.to_str() {
-            return path.replace('/', "\\");
-        }
+    if std::path::MAIN_SEPARATOR == '/'
+        && let Some(path) = path.to_str()
+    {
+        return path.replace('/', "\\");
     }
     path.components()
         .map(|component| component.as_os_str().to_string_lossy())
