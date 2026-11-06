@@ -461,3 +461,42 @@ def test_skip_errors_still_raises_read_errors(sample_mft: Path):
 
     with pytest.raises(OSError, match="bad sector"):
         list(parser.entries())
+
+
+def test_entries_bodyfile(sample_mft: Path):
+    parser = PyMftParser(str(sample_mft))
+    chunks = list(parser.entries_bodyfile())
+
+    # Split on "\n" only: names can hold U+2028 and other characters `splitlines` breaks on.
+    lines = "".join(chunks).split("\n")[:-1]
+    assert len(lines) == 26132
+    # MD5|name|inode|mode|UID|GID|size|atime|mtime|ctime|crtime
+    assert lines[0].split("|")[:3] == ["0", "/$MFT ($FILE_NAME)", "0-48-3"]
+    assert lines[1].split("|")[:3] == ["0", "/$MFT", "0-128-1"]
+    assert all(len(line.split("|")) == 11 for line in lines)
+    # One chunk per file, each ending its last line.
+    assert all(chunk.endswith("\n") for chunk in chunks)
+
+
+def test_data_streams(sample_mft: Path):
+    parser = PyMftParser(str(sample_mft))
+
+    # The unnamed stream is in an extension record, the Zone.Identifier ADS in the base one.
+    streams = parser.data_streams(12938)
+    assert [(s.name, s.record_entry_id, s.is_resident) for s in streams] == [
+        ("", 12940, False),
+        ("Zone.Identifier", 12938, True),
+    ]
+    assert streams[0].data is None
+    assert streams[1].data == b"[ZoneTransfer]\r\nZoneId=3\r\n"
+    assert streams[1].size == len(streams[1].data)
+
+    # An all-zero record.
+    assert parser.get_entry(16) is None
+    assert parser.data_streams(16) == []
+
+    # The extension record's stream belongs to file 12938, listed above.
+    assert parser.data_streams(12940) == []
+
+    with pytest.raises(IndexError):
+        parser.data_streams(parser.number_of_entries())

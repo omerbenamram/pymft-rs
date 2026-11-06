@@ -86,3 +86,22 @@ Name: $MFTMirr
 --------------------------------
 .....
 ```
+
+### Bodyfile and data streams
+
+`entries_bodyfile()` yields Sleuth Kit bodyfile lines (the same as `mft_dump -o bodyfile` and `fls -m`), for timelining with `mactime`.
+`data_streams(entry_id)` returns a file's `$DATA` streams, including alternate data streams and ones stored in extension records,
+with the content of the resident ones.
+
+```python
+from mft import PyMftParser
+
+parser = PyMftParser("samples/MFT")
+
+with open("mft.body", "w", encoding="utf-8", newline="") as body:
+    body.writelines(parser.entries_bodyfile())
+
+for stream in parser.data_streams(12938):
+    if stream.name == "Zone.Identifier" and stream.data is not None:
+        print(stream.data.decode())  # [ZoneTransfer] ZoneId=3
+```
