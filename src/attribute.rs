@@ -11,7 +11,8 @@ use mft_rs::attribute::x50::{Ace, Acl, SecurityDescriptorAttr};
 use mft_rs::attribute::x60::VolumeNameAttr;
 use mft_rs::attribute::x70::VolumeInformationAttr;
 use mft_rs::attribute::x90::{
-    IndexEntryHeader, IndexRootAttr, IndexRootFlags, ViewIndexEntry, ViewIndexValue,
+    IndexCollationRules, IndexEntryHeader, IndexRootAttr, IndexRootFlags, ViewIndexEntry,
+    ViewIndexValue,
 };
 use mft_rs::attribute::xc0::{ReparseData, ReparsePointAttr};
 use mft_rs::attribute::xd0::EaInformationAttr;
@@ -139,7 +140,7 @@ impl PyMftAttribute {
                     PyMftAttributeX30::from_x30(py, info)?.into_py_any(py)?
                 }
                 MftAttributeContent::AttrX40(info) => {
-                    PyMftAttributeX40::from_x40(py, info.clone())?.into_py_any(py)?
+                    PyMftAttributeX40::from_x40(py, info)?.into_py_any(py)?
                 }
                 MftAttributeContent::AttrX50(info) => {
                     PyMftAttributeX50::from_x50(py, info)?.into_py_any(py)?
@@ -430,37 +431,25 @@ pub struct PyMftAttributeX40 {
     /// Unique Id assigned to file
     pub object_id: String,
     #[pyo3(get)]
-    /// Volume where file was created
-    pub birth_volume_id: String,
+    /// Volume where file was created, or None if the attribute holds only the object id
+    pub birth_volume_id: Option<String>,
     #[pyo3(get)]
-    /// Original Object Id of file
-    pub birth_object_id: String,
+    /// Original Object Id of file, or None if the attribute holds only the object id
+    pub birth_object_id: Option<String>,
     #[pyo3(get)]
-    /// Domain in which object was created
-    pub domain_id: String,
+    /// Domain in which object was created, or None if the attribute holds only the object id
+    pub domain_id: Option<String>,
 }
 
 impl PyMftAttributeX40 {
-    pub fn from_x40(py: Python, attr: ObjectIdAttr) -> PyResult<Py<Self>> {
+    pub fn from_x40(py: Python, attr: &ObjectIdAttr) -> PyResult<Py<Self>> {
         Py::new(
             py,
             PyMftAttributeX40 {
                 object_id: attr.object_id.to_string(),
-                birth_volume_id: attr
-                    .birth_volume_id
-                    .as_ref()
-                    .map(|a| a.to_string())
-                    .unwrap_or_default(),
-                birth_object_id: attr
-                    .birth_object_id
-                    .as_ref()
-                    .map(|a| a.to_string())
-                    .unwrap_or_default(),
-                domain_id: attr
-                    .domain_id
-                    .as_ref()
-                    .map(|a| a.to_string())
-                    .unwrap_or_default(),
+                birth_volume_id: attr.birth_volume_id.as_ref().map(|a| a.to_string()),
+                birth_object_id: attr.birth_object_id.as_ref().map(|a| a.to_string()),
+                domain_id: attr.domain_id.as_ref().map(|a| a.to_string()),
             },
         )
     }
@@ -651,6 +640,7 @@ pub struct PyMftAttributeX90 {
     /// Whether the index continues in `$INDEX_ALLOCATION` (only the entries in the
     /// index root are available here).
     pub is_large_index: bool,
+    collation_rule_enum: IndexCollationRules,
     index_entries: Vec<Py<PyMftIndexEntry>>,
     view_entries: Vec<Py<PyMftViewIndexEntry>>,
 }
@@ -675,6 +665,7 @@ impl PyMftAttributeX90 {
             PyMftAttributeX90 {
                 attribute_type: attr.attribute_type,
                 collation_rule: attr.collation_rule as u32,
+                collation_rule_enum: attr.collation_rule,
                 index_entry_size: attr.index_entry_size,
                 index_entry_number_of_cluster_blocks: attr.index_entry_number_of_cluster_blocks,
                 relative_offset_to_index_node: attr.relative_offset_to_index_node,
@@ -690,6 +681,20 @@ impl PyMftAttributeX90 {
 
 #[pymethods]
 impl PyMftAttributeX90 {
+    /// The name of `collation_rule`, as mft's JSON writes it, such as "CollationFilename".
+    #[getter]
+    pub fn collation_rule_name(&self) -> &'static str {
+        match self.collation_rule_enum {
+            IndexCollationRules::CollationBinary => "CollationBinary",
+            IndexCollationRules::CollationFilename => "CollationFilename",
+            IndexCollationRules::CollationUnicodeString => "CollationUnicodeString",
+            IndexCollationRules::CollationNtofsUlong => "CollationNtofsUlong",
+            IndexCollationRules::CollationNtofsSid => "CollationNtofsSid",
+            IndexCollationRules::CollationNtofsSecurityHash => "CollationNtofsSecurityHash",
+            IndexCollationRules::CollationNtofsUlongs => "CollationNtofsUlongs",
+        }
+    }
+
     /// The index entries stored in the index root itself, for a `$FILE_NAME` index (`$I30`).
     pub fn index_entries(&self, py: Python) -> Vec<Py<PyMftIndexEntry>> {
         self.index_entries

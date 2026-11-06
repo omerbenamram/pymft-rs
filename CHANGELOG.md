@@ -8,6 +8,17 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `PyMftAttributeX90.collation_rule_name`: the index's collation rule by name, such as
+  `"CollationFilename"`, as mft's JSON writes it. `collation_rule` stays the integer.
+
+### Changed
+
+- **Breaking:** `PyMftAttributeX40.birth_volume_id`, `birth_object_id` and `domain_id` are `None`
+  when the `$OBJECT_ID` holds only the object id (16 bytes, as on all 73 in `samples/MFT`),
+  instead of `""`, like mft's JSON `null`. Code that tests `== ""` should test `is None`.
+
 ## [0.10.1] - 2026-11-03
 
 ### Fixed

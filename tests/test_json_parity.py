@@ -168,9 +168,8 @@ def check_content(content, data, header):
         check_file_name(content, data)
     elif isinstance(content, PyMftAttributeX40):
         assert content.object_id == data["object_id"]
-        # The bindings give a missing id as "" rather than None.
         for field in ("birth_volume_id", "birth_object_id", "domain_id"):
-            assert getattr(content, field) == (data[field] or ""), field
+            assert getattr(content, field) == data[field], field
     elif isinstance(content, PyMftAttributeX50):
         assert_fields(content, data, "revision", "control", "owner", "group")
         check_acl(content.sacl, data["sacl"])
@@ -193,6 +192,7 @@ def check_content(content, data, header):
             "index_node_allocation_length",
         )
         assert content.collation_rule == COLLATION_RULES[data["collation_rule"]]
+        assert content.collation_rule_name == data["collation_rule"]
         assert content.is_large_index == ("LARGE_INDEX" in data["index_root_flags"])
         expected_entries = data["index_entries"]["index_entries"]
         for entry, expected in zip(content.index_entries(), expected_entries, strict=True):

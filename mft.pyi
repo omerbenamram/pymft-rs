@@ -217,12 +217,12 @@ class PyMftAttributeX40:
 
     object_id: str
     """Unique Id assigned to file."""
-    birth_volume_id: str
-    """Volume where file was created."""
-    birth_object_id: str
-    """Original Object Id of file."""
-    domain_id: str
-    """Domain in which object was created."""
+    birth_volume_id: str | None
+    """Volume where file was created, or None if the attribute holds only the object id."""
+    birth_object_id: str | None
+    """Original Object Id of file, or None if the attribute holds only the object id."""
+    domain_id: str | None
+    """Domain in which object was created, or None if the attribute holds only the object id."""
 
 @final
 class PyMftAttributeX50:
@@ -302,6 +302,8 @@ class PyMftAttributeX90:
     attribute_type: int
     collation_rule: int
     """Collation rule used to sort the index entries."""
+    collation_rule_name: str
+    """The name of `collation_rule`, such as "CollationFilename"."""
     index_entry_size: int
     index_entry_number_of_cluster_blocks: int
     relative_offset_to_index_node: int
