@@ -133,6 +133,8 @@ def test_index_root_entries(sample_mft: Path):
 
     assert content.is_large_index
     assert content.index_node_length == 392
+    assert content.collation_rule == 1
+    assert content.collation_rule_name == "CollationFilename"
 
     entries = content.index_entries()
     assert len(entries) == 3
@@ -461,3 +463,12 @@ def test_skip_errors_still_raises_read_errors(sample_mft: Path):
 
     with pytest.raises(OSError, match="bad sector"):
         list(parser.entries())
+
+
+def test_object_id_without_birth_ids_gives_none(sample_mft: Path):
+    # Entry 3's $OBJECT_ID holds only the object id (16 bytes), like all 73 in this sample.
+    object_id = attribute_content(entry_by_id(sample_mft, 3), 0x40)
+    assert object_id.object_id == "CC80E6BA-4C45-4742-B372-24956C937B9D"
+    assert object_id.birth_volume_id is None
+    assert object_id.birth_object_id is None
+    assert object_id.domain_id is None
