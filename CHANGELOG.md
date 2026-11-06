@@ -8,6 +8,16 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `PyMftParser.entries_bodyfile()` yields Sleuth Kit bodyfile lines, as `mft_dump -o bodyfile`
+  and `fls -m` write them, for timelining with `mactime`. On the sample MFT the output is
+  byte-for-byte the same as `mft_dump`'s.
+- `PyMftParser.data_streams(entry_id)` returns a file's `$DATA` streams as `PyMftDataStream`s
+  (name, size, the record it is stored in, and the content of resident ones), including streams
+  stored in extension records, so resident files and alternate data streams such as
+  `Zone.Identifier` can be exported, as `mft_dump --extract-resident-streams` does.
+
 ## [0.10.1] - 2026-11-03
 
 ### Fixed

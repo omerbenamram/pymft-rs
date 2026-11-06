@@ -40,6 +40,19 @@ class PyMftParser:
     def entries_csv(self) -> PyMftEntriesIterator:
         """Returns an iterator that yields mft entries as CSV lines (bytes)."""
 
+    def entries_bodyfile(self) -> PyMftEntriesIterator:
+        """Returns an iterator that yields Sleuth Kit bodyfile lines (as `fls -m` writes
+        them, for `mactime`), one `str` per file holding all of its lines. Extension records
+        and entries without a `$FILE_NAME` are skipped."""
+
+    def data_streams(self, entry_id: int) -> list[PyMftDataStream]:
+        """Returns the `$DATA` streams of the file with this entry number, including the
+        ones stored in its extension records: the unnamed stream first, then the named ones
+        (alternate data streams), in the order they are stored. A resident stream carries
+        its content in `data`. A non-resident one has `data=None`, since its content is on
+        the volume rather than in the MFT. An all-zero record has none. Raises `IndexError`
+        like `get_entry`."""
+
     def __iter__(self) -> PyMftEntriesIterator: ...
     def __next__(self) -> NoReturn:
         """Raises `NotImplementedError`: iterate over `entries()` instead."""
@@ -47,13 +60,32 @@ class PyMftParser:
 @final
 class PyMftEntriesIterator:
     """Yields `PyMftEntry` objects from `entries()`, `str` from `entries_json()` and
-    `bytes` from `entries_csv()`.
+    `entries_bodyfile()`, and `bytes` from `entries_csv()`.
 
     Each iterator has its own position.
     """
 
     def __iter__(self) -> Self: ...
     def __next__(self) -> PyMftEntry | str | bytes: ...
+
+@final
+class PyMftDataStream:
+    """A `$DATA` stream of a file, from `PyMftParser.data_streams`."""
+
+    name: str
+    """The stream's name, empty for the unnamed (main) stream."""
+    size: int
+    """The stream's size in bytes."""
+    record_entry_id: int
+    """The record the stream is stored in: the file's entry, or one of its extension
+    records."""
+    attribute_id: int
+    """The attribute's instance number in that record."""
+    data: bytes | None
+    """The content of a resident stream, `None` for a non-resident one."""
+    @property
+    def is_resident(self) -> bool:
+        """Whether the content is stored in the MFT record."""
 
 @final
 class PyMftEntry:
