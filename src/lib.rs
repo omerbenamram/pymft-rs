@@ -348,9 +348,11 @@ impl PyMftEntriesIterator {
             return Ok(None);
         }
         let extensions = parser.get_extension_entries(entry);
+        // As `mft_dump -o bodyfile` does, a path that can't be resolved is left empty.
         let full_path = parser
             .get_full_path_for_entry(entry)
-            .map_err(PyMftError)?
+            .ok()
+            .flatten()
             .unwrap_or_default();
         let mut lines = Vec::new();
         mft_rs::bodyfile::write_entry(&mut lines, entry, &extensions, &full_path)?;
