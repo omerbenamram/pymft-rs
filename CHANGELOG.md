@@ -8,6 +8,13 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-06
+
+### Changed
+
+- Built on mft 0.10.0, which no longer depends on `winstructs` or `chrono`, so neither is compiled
+  into the wheels. The Python API and its output are unchanged.
+
 ## [0.10.1] - 2026-11-03
 
 ### Fixed
