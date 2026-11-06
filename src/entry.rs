@@ -5,9 +5,8 @@ use pyo3::prelude::*;
 
 use crate::attribute::PyMftAttribute;
 use crate::err::skip_or_raise;
-use crate::utils::windows_path;
 use mft_rs::attribute::MftAttributeType;
-use mft_rs::{MftEntry, MftParser};
+use mft_rs::{MftEntry, MftParser, windows_path};
 
 #[pyclass(module = "mft")]
 pub struct PyMftEntry {
