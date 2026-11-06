@@ -6,7 +6,6 @@ use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAnyMethods, PyString, PyStringMethods};
 use pyo3_file::PyFileLikeObject;
-use std::path::Path;
 
 #[derive(Debug)]
 pub enum FileOrFileLike {
@@ -126,12 +125,4 @@ pub fn date_to_pyobject(date: &Timestamp) -> PyResult<Py<PyAny>> {
         ))?;
         Ok(dt.unbind())
     })
-}
-
-/// Joins a resolved path with `\`, the way Windows shows NTFS paths, whatever the host platform.
-pub fn windows_path(path: &Path) -> String {
-    path.components()
-        .map(|component| component.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("\\")
 }
