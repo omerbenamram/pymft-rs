@@ -6,8 +6,8 @@ UV ?= uv
 
 PY := $(VENV)/bin/python
 # maturin installs into the environment that VIRTUAL_ENV names, or else into `.venv`: without
-# this, any other VENV is ignored. `--locked` keeps Cargo.lock as committed, as CI does.
-MATURIN_DEVELOP := VIRTUAL_ENV="$(abspath $(VENV))" $(VENV)/bin/maturin develop --locked
+# this, any other VENV is ignored.
+export VIRTUAL_ENV := $(abspath $(VENV))
 
 help:
 	@echo "Targets:"
@@ -28,10 +28,10 @@ deps: venv
 	$(UV) pip install --python $(PY) -U "maturin>=1.15,<2.0" pytest mypy typing_extensions
 
 build: deps
-	$(MATURIN_DEVELOP) --release
+	$(VENV)/bin/maturin develop --locked --release
 
 build-dev: deps
-	$(MATURIN_DEVELOP)
+	$(VENV)/bin/maturin develop --locked
 
 test: build
 	$(PY) -m pytest -q
