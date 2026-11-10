@@ -576,27 +576,34 @@ def test_file_size_reads_no_more_than_it_needs(sample_mft: Path):
     assert reads_of(3498) == 2
 
 
-def test_file_size_does_not_scan_the_mft(sample_mft: Path):
+def test_file_size_with_a_list_that_does_not_name_the_records(sample_mft: Path):
     # An $ATTRIBUTE_LIST that fails to parse doesn't say where the file's other records are
-    # (nor does a non-resident one, which is outside the MFT). Finding them takes reading every
-    # record, which `entries_csv()` does once and `file_size` doesn't: it is the base record's.
+    # (nor does a non-resident one, which is outside the MFT). The parser finds them by reading
+    # every record, once.
     data = bytearray(sample_mft.read_bytes())
-    attribute_list = attribute_offset(data, 3498, 0x20)
-    value = attribute_list + int.from_bytes(
-        data[attribute_list + 0x14 : attribute_list + 0x16], "little"
-    )
-    data[value + 4 : value + 6] = b"\0\0"  # The first entry's length.
+    for entry_id in (3498, 3499):
+        attribute_list = attribute_offset(data, entry_id, 0x20)
+        value = attribute_list + int.from_bytes(
+            data[attribute_list + 0x14 : attribute_list + 0x16], "little"
+        )
+        data[value + 4 : value + 6] = b"\0\0"  # The first entry's length.
 
     source = CountingReads(bytes(data))
     parser = PyMftParser(source)
-    parser.get_entry(3498)
+    # The whole MFT, 64 KiB at a time.
     before = source.reads
-    entry = parser.get_entry(3498)
-    assert source.reads - before == 1
-    assert entry.file_size == 0
+    assert parser.get_entry(3498).file_size == 1024
+    assert source.reads - before >= len(data) // (64 * ENTRY_SIZE)
+
+    # Not again: the entry's record, its parent directories' and its extension record.
+    before = source.reads
+    assert parser.get_entry(3499).file_size == 1024
+    assert parser.get_entry(3498).file_size == 1024
+    assert source.reads - before <= 10
 
     rows = csv.DictReader(io.StringIO(b"".join(parser.entries_csv()).decode()))
-    assert {int(row["EntryId"]): row["FileSize"] for row in rows}[3498] == "1024"
+    sizes = {int(row["EntryId"]): int(row["FileSize"]) for row in rows}
+    assert sizes[3498] == sizes[3499] == 1024
 
 
 def test_file_size_leaves_out_data_that_fails_to_parse(sample_mft: Path):
