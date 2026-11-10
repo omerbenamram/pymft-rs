@@ -11,7 +11,7 @@ This project is published to PyPI as `mft` using `maturin` + GitHub Actions.
 1. Pick the version. While on 0.x, a breaking change or a new feature bumps the minor version
    and fixes alone bump the patch version.
 2. Open a `chore(release): X.Y.Z` PR that bumps `version` in `Cargo.toml`, commits the refreshed
-   `Cargo.lock` (any `cargo build` updates it; CI builds with `--locked`), and renames
+   `Cargo.lock` (a plain `cargo build` updates it; CI and the `make` targets build with `--locked`), and renames
    `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD`; that section becomes the
    GitHub release's notes, and CI fails the PR without it. If it needs a new `mft` crate,
    release that first and point the dependency at the crates.io version.
