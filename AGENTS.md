@@ -20,8 +20,8 @@ A deliberate blocker is different. Examples are a safety check that refuses a co
 
 Two kinds of action wait for Omer. Nothing else in this repository needs his approval.
 
-1. **Publishing a release.** A version published to crates.io or PyPI cannot be replaced or removed, only yanked. Open a `chore(release): X.Y.Z` pull request only when Omer asks for a release. Merge it only when he tells you to, because that merge tags the commit and publishes it. When he has told you, that is the go-ahead: merge it without asking again. `RELEASING.md` has the steps.
-2. **Speaking to other people on GitHub.** This covers closing an issue, commenting on an issue, and commenting on, merging or closing a pull request that you did not open. These speak to Omer's users in his name. Write the draft, show it to Omer, and post it when he agrees. A closing keyword in a pull request, such as `Fixes #12`, closes the issue at merge. For an issue that someone else opened, write `Refs #12` and draft the closing comment for Omer.
+1. **Publishing a release.** A version published to crates.io or PyPI cannot be replaced or removed, only yanked. A merge to `master` that changes `version` in `Cargo.toml` tags the commit and publishes it, whatever the pull request is called. So change `version` only in a `chore(release): X.Y.Z` pull request, open one only when Omer asks for a release, and merge it only when he tells you to. When he has told you, that is the go-ahead: merge it without asking again. `RELEASING.md` has the steps.
+2. **Speaking to other people on GitHub.** This covers closing an issue, commenting on an issue, and commenting on, merging or closing a pull request that you did not open. These speak to Omer's users in his name. GitHub shows Omer's account as the author of your pull requests too; yours come from a `claude/` branch and say in their description that Claude made them. Write the draft, show it to Omer, and post it when he agrees. A closing keyword in a pull request, such as `Fixes #12`, closes the issue at merge. For an issue that someone else opened, write `Refs #12` and draft the closing comment for Omer.
 
 Take every other step without asking. These are the common ones:
 
@@ -78,21 +78,22 @@ Use plain words and full sentences: short ones, one idea each, in the active voi
 
 ### Checks
 
-`.github/workflows/ci.yml` runs these on every pull request and on `master`. Before you push, run the ones that match what you changed. A change to documentation alone needs none.
+`.github/workflows/ci.yml` runs the first two on every pull request and on `master` as they are written here. It runs `pytest` against release wheels on Python 3.10 and free-threaded 3.14 on Linux, Windows and macOS, and the stub check on Python 3.10. `make test` and `make stubtest` are the local forms of those, on your own `python3`. Before you push, run the ones that match what you changed. A change to these instruction files alone needs none.
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --locked --all-targets -- -D warnings`
-- `make test`. It creates `.venv` with `uv`, builds the extension with `maturin develop --release`, and runs `pytest`.
+- `make test`. It creates `.venv` with `uv`, builds the extension with `maturin develop --release`, and runs `pytest`. One test in `tests/test_threading.py` is skipped on an interpreter that has the GIL. Run it with `VIRTUAL_ENV=$PWD/.venv-ft make test PYTHON=3.14t VENV=.venv-ft`.
 - `make stubtest`. It checks `mft.pyi` against the built module, with the exceptions in `tests/stubtest-allowlist.txt`. Update `mft.pyi` in the same pull request as an API change.
+- When you change `CHANGELOG.md` or `version` in `Cargo.toml`: `scripts/release-notes.sh <version in Cargo.toml>`. CI fails a pull request when the current version has no notes in `CHANGELOG.md`.
 
-CI builds with `--locked`, so commit `Cargo.lock` whenever the dependencies change. This crate is itself named `mft`, so `cargo update -p mft` is ambiguous. Name the registry package: `cargo update -p 'registry+https://github.com/rust-lang/crates.io-index#mft@<old version>'`.
+CI builds with `--locked`, and `make test` does not, so a local build can change `Cargo.lock` without saying so. Commit `Cargo.lock` whenever the dependencies change. This crate is itself named `mft`, so `cargo update -p mft` is ambiguous. Name the registry package: `cargo update -p 'registry+https://github.com/rust-lang/crates.io-index#mft@<old version>'`.
 
 ### Code rules
 
 - The Python API is the contract. Mark a breaking change with **Breaking:** in `CHANGELOG.md`, and say what a caller must change.
 - The bindings build on the published `mft` crate. A change that needs unreleased `mft` code waits for an `mft` release, and a release waits for Omer.
 - The module runs on free-threaded Python. Keep it safe without the GIL, and keep `tests/test_threading.py` passing.
-- `build.rs` fails the build when the wheel's ABI does not match `MFT_EXPECT_PYTHON`, and `scripts/check_wheel_abi.py` checks the built wheel. Keep both when you change the build.
+- When `MFT_EXPECT_PYTHON` is set, as it is in CI, `build.rs` fails a build whose free-threaded flag does not match it. `scripts/check_wheel_abi.py` checks the tags of the built wheel. Keep both when you change the build.
 - Timestamps use `jiff`. Do not add `chrono`: Omer prefers `jiff`.
 - A pull request that changes behaviour adds an entry under `## [Unreleased]` in `CHANGELOG.md`. Open pull requests therefore conflict in that file: merge `master` and keep both entries.
 
