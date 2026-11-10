@@ -11,15 +11,20 @@ class PyMftParser:
     """Returns an instance of the parser.
 
     Works on both a path (`str`, `bytes` or `os.PathLike`, such as `pathlib.Path`), or a
-    file-like object opened in binary mode. Raises `TypeError` for anything else, a file
-    opened in text mode included.
+    file-like object opened in binary mode. An object with `read` and `seek` is read as a
+    file object, also when it is an `os.PathLike`. Raises `TypeError` for anything else, a
+    file opened in text mode included.
 
     A parser can be iterated any number of times, and `get_entry` reads one entry by
     number, including while an iteration is in progress. Threads can share a parser.
 
     A file-like object is read at the parser's own position: the parser seeks before every
-    read, so the object can be used elsewhere between calls, by another parser too. Not from
-    another thread at the same time, as a seek and its read are two calls.
+    read, so the object can be used elsewhere between the parser's calls, by another parser
+    too. That only holds on one thread. A seek and its read are two calls on the object, so
+    if another thread uses the object at the same time (directly, or through a second
+    parser over it), the two can interleave and a read can return the bytes of another
+    record. Threads can share one parser, whose lock covers both calls; give each thread's
+    parser its own file object.
 
     Iterating over entries or attributes raises `RuntimeError` or `OSError` for one that
     fails to parse, after stepping past it, so `next()` can go on. With `skip_errors=True`
@@ -65,6 +70,9 @@ class PyMftEntriesIterator:
 
     Each iterator has its own position. Threads can share an iterator: each entry goes to
     one of them.
+
+    A file-like object's `read` and `seek` must not call back into the parser or iterator
+    that is reading it: that call raises `RuntimeError`.
     """
 
     def __iter__(self) -> Self: ...
@@ -92,9 +100,11 @@ class PyMftEntry:
     total_entry_size: int
     full_path: str
     file_size: int
-    """The size of the unnamed `$DATA` stream, or of a named one if there is none, including
-    when an extension record holds it. 0 without a `$DATA` attribute. The same as `FileSize`
-    in `entries_csv()`."""
+    """The size of the unnamed `$DATA` stream, or of a named one if there is none, also when
+    an extension record holds it. 0 without a `$DATA` attribute. The same as `FileSize` in
+    `entries_csv()`, except for a file whose `$ATTRIBUTE_LIST` is non-resident or fails to
+    parse: only the base record is looked at then, as finding the file's other records takes
+    reading the whole MFT."""
     def attributes(self) -> PyMftAttributesIter: ...
 
 @final

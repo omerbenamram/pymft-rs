@@ -67,6 +67,21 @@ impl FileOrFileLike {
     pub fn from_pyobject(path_or_file_like: &Bound<'_, PyAny>) -> PyResult<FileOrFileLike> {
         let py = path_or_file_like.py();
 
+        // A file object first: one can have a path too (fsspec's `LocalFileOpener`, a wrapper
+        // that decompresses), and what its `read` gives isn't what is on disk under that name.
+        // `read` and `seek` are all that is used, so `PyFileLikeObject` has nothing more to check.
+        if path_or_file_like.hasattr("read")? && path_or_file_like.hasattr("seek")? {
+            // A text file would be read as its characters encoded back to UTF-8.
+            let text_io = py.import("io")?.getattr("TextIOBase")?;
+            if path_or_file_like.is_instance(&text_io)? {
+                return Err(PyTypeError::new_err(
+                    "expected a file opened in binary mode ('rb'), not a text file",
+                ));
+            }
+            return PyFileLikeObject::py_new(path_or_file_like.clone())
+                .map(|file| FileOrFileLike::FileLike(PinnedFileLike::new(file)));
+        }
+
         // A path: `str`, `bytes` or `os.PathLike`. `os.fsdecode` takes the three and decodes
         // bytes the way Python does file names, so one that isn't UTF-8 is kept as it is.
         if path_or_file_like.is_instance_of::<PyString>()
@@ -79,24 +94,11 @@ impl FileOrFileLike {
             return Ok(FileOrFileLike::File(path.extract()?));
         }
 
-        // A text file would be read as its characters encoded back to UTF-8.
-        let text_io = py.import("io")?.getattr("TextIOBase")?;
-        if path_or_file_like.is_instance(&text_io)? {
-            return Err(PyTypeError::new_err(
-                "expected a file opened in binary mode ('rb'), not a text file",
-            ));
-        }
-        if !path_or_file_like.hasattr("read")? || !path_or_file_like.hasattr("seek")? {
-            return Err(PyTypeError::new_err(format!(
-                "expected a path (str, bytes or os.PathLike) or a binary file-like object with \
-                 read() and seek(), not {}",
-                path_or_file_like.get_type().name()?
-            )));
-        }
-
-        // We only need read + seek (no write, no fileno).
-        PyFileLikeObject::py_with_requirements(path_or_file_like.clone(), true, false, true, false)
-            .map(|file| FileOrFileLike::FileLike(PinnedFileLike::new(file)))
+        Err(PyTypeError::new_err(format!(
+            "expected a path (str, bytes or os.PathLike) or a binary file-like object with \
+             read() and seek(), not {}",
+            path_or_file_like.get_type().name()?
+        )))
     }
 }
 
