@@ -31,6 +31,12 @@ class PyMftParser:
     fails to parse, after stepping past it, so `next()` can go on. With `skip_errors=True`
     it is skipped instead, with a `RuntimeWarning` that `warnings` filters can count, log
     or turn back into an error. Failing to read the file raises either way.
+
+    What the parser notices but reads anyway, such as a record whose fixup values don't
+    match, is reported as a `UserWarning`. If a `warnings` filter turns it into an error
+    (`-W error`), the call that read the record raises it and doesn't return the entry:
+    `get_entry` raises every time, and an iterator steps past the entry, as for one that
+    fails to parse.
     """
 
     def __new__(

@@ -27,6 +27,10 @@ and this project adheres to
 - `PyMftParser` takes `os.PathLike` (`pathlib.Path`) and `bytes` paths, and paths that aren't
   UTF-8. It raises a `TypeError` that says what it takes for anything else, and for a file opened
   in text mode, which gave `OSError: buffer size must be at least 4 bytes`.
+- The `UserWarning`s for what the parser notices but reads anyway (a record whose fixup values
+  don't match) are sent once the parser is unlocked. A `warnings` hook that used the parser never
+  returned. A filter that turns them into errors (`-W error`) now makes the call raise, where the
+  error was dropped. The entry that warned is then not returned.
 
 ## [0.10.1] - 2026-11-03
 

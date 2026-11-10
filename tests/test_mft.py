@@ -5,6 +5,7 @@ import itertools
 import os
 import sys
 import threading
+import warnings
 
 import pytest
 
@@ -743,3 +744,110 @@ def test_a_path_like_with_only_read_is_a_path(sample_mft: Path):
             raise AssertionError("not a file object: it has no seek")
 
     assert PyMftParser(Located()).get_entry(0).full_path == "$MFT"
+
+
+@pytest.fixture
+def mft_with_a_bad_fixup(sample_mft: Path) -> io.BytesIO:
+    """The first sector of entry 3 doesn't end with the update sequence number, which the mft
+    crate logs a warning about."""
+    data = bytearray(sample_mft.read_bytes()[: 16 * ENTRY_SIZE])
+    data[3 * ENTRY_SIZE + 510] ^= 0xFF
+    return io.BytesIO(bytes(data))
+
+
+def test_a_logged_warning_is_a_python_warning(mft_with_a_bad_fixup: io.BytesIO):
+    parser = PyMftParser(mft_with_a_bad_fixup)
+    with pytest.warns(UserWarning, match="fixup bytes are not equal") as caught:
+        entry = parser.get_entry(3)
+    assert entry.valid_fixup is False
+    assert len(caught) == 1
+    # Reported at the caller's line, as `warnings.warn` does.
+    assert caught[0].filename == __file__
+
+
+@pytest.mark.filterwarnings("error::UserWarning")
+def test_logged_warnings_can_be_errors(mft_with_a_bad_fixup: io.BytesIO):
+    parser = PyMftParser(mft_with_a_bad_fixup)
+    with pytest.raises(UserWarning, match="fixup bytes are not equal"):
+        parser.get_entry(3)
+
+    for method in ("entries", "entries_json", "entries_csv"):
+        entries = getattr(parser, method)()
+        for _ in range(3):
+            next(entries)
+        with pytest.raises(UserWarning, match="fixup bytes are not equal"):
+            next(entries)
+        # The iterator has stepped past entry 3.
+        assert len(list(entries)) == 12
+
+
+@pytest.mark.filterwarnings("always::UserWarning")
+def test_a_warnings_hook_can_use_the_parser(mft_with_a_bad_fixup: io.BytesIO, monkeypatch):
+    parser = PyMftParser(mft_with_a_bad_fixup)
+    entries = parser.entries()
+    seen = []
+
+    def hook(message, *args, **kwargs):
+        seen.append((parser.get_entry(0).full_path, next(entries).entry_id))
+
+    monkeypatch.setattr(warnings, "showwarning", hook)
+
+    # On a thread, so that a hook waiting for the parser's lock fails the test.
+    def read():
+        parser.get_entry(3)
+        for _ in range(3):
+            next(entries)
+
+    thread = threading.Thread(target=read, daemon=True)
+    thread.start()
+    thread.join(timeout=30)
+    assert not thread.is_alive(), "the warnings hook is waiting for the parser"
+    # Once for `get_entry(3)`, and once when the iterator reads entry 3.
+    assert seen == [("$MFT", 0), ("$MFT", 4)]
+
+
+def test_every_logged_warning_is_sent_when_one_is_an_error(sample_mft: Path):
+    # Both sectors of entry 3 fail their fixup check, which logs a warning each.
+    data = bytearray(sample_mft.read_bytes()[: 16 * ENTRY_SIZE])
+    data[3 * ENTRY_SIZE + 510] ^= 0xFF
+    data[3 * ENTRY_SIZE + 1022] ^= 0xFF
+    parser = PyMftParser(io.BytesIO(bytes(data)))
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        parser.get_entry(3)
+    assert ["stride_number: 0" in str(w.message) for w in caught] == [True, False]
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        warnings.filterwarnings("error", message=".*stride_number: 0")
+        with pytest.raises(UserWarning, match="stride_number: 0"):
+            parser.get_entry(3)
+    # The second one was still sent.
+    assert ["stride_number: 1" in str(w.message) for w in caught] == [True]
+
+
+@pytest.mark.filterwarnings("error::UserWarning")
+@pytest.mark.parametrize("bad_entry", [0, 1])
+def test_csv_header_survives_a_row_lost_to_a_warning(sample_mft: Path, bad_entry: int):
+    data = sample_mft.read_bytes()[: 16 * ENTRY_SIZE]
+    expected = list(PyMftParser(io.BytesIO(data)).entries_csv())
+    header, first_row = expected[0].splitlines(keepends=True)
+    expected[0] = first_row
+
+    data = bytearray(data)
+    data[bad_entry * ENTRY_SIZE + 510] ^= 0xFF
+    rows = PyMftParser(io.BytesIO(bytes(data))).entries_csv()
+    seen = []
+    for entry_id in range(16):
+        if entry_id == bad_entry:
+            with pytest.raises(UserWarning, match="fixup bytes are not equal"):
+                next(rows)
+        else:
+            seen.append(next(rows))
+
+    # The row of the entry that warned isn't returned. The header comes once, with the first row
+    # that is.
+    del expected[bad_entry]
+    expected[0] = header + expected[0]
+    assert seen == expected

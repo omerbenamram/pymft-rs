@@ -2,11 +2,13 @@ use log::{Level, Log, Metadata, Record, SetLoggerError};
 
 use jiff::tz::Offset;
 use mft_rs::Timestamp;
-use pyo3::exceptions::PyTypeError;
+use pyo3::exceptions::{PyTypeError, PyUserWarning};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAnyMethods, PyBytes, PyString, PyTypeMethods};
 use pyo3_file::PyFileLikeObject;
+use std::cell::RefCell;
+use std::ffi::CString;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -152,10 +154,68 @@ impl FileOrFileLike {
     }
 }
 
-/// A logger that prints all messages with a readable output format.
+thread_local! {
+    /// The warnings logged on this thread inside [`with_deferred_warnings`], if it is running.
+    static DEFERRED_WARNINGS: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+}
+
+/// Puts back the outer call's warnings, also when unwinding.
+struct DeferredWarningsScope(Option<Vec<String>>);
+
+impl Drop for DeferredWarningsScope {
+    fn drop(&mut self) {
+        DEFERRED_WARNINGS.set(self.0.take());
+    }
+}
+
+/// Runs `f`, which locks the parser, and only then sends the warnings the `mft` crate logged in
+/// it to `warnings.warn`, which runs Python code: a `warnings` hook must be able to use the
+/// parser. Every warning is sent, whatever `f` and the ones before it came to.
+///
+/// Returns the result of `f`, and the error of the first warning that a `warnings` filter turned
+/// into one.
+pub fn deferring_warnings<T>(
+    py: Python<'_>,
+    f: impl FnOnce() -> PyResult<T>,
+) -> (PyResult<T>, PyResult<()>) {
+    let (result, messages) = {
+        // Calls nest when a file-like object's `read` uses another parser.
+        let _scope = DeferredWarningsScope(DEFERRED_WARNINGS.replace(Some(Vec::new())));
+        let result = f();
+        (result, DEFERRED_WARNINGS.take().unwrap_or_default())
+    };
+    let mut warned = Ok(());
+    if !messages.is_empty() {
+        let category = py.get_type::<PyUserWarning>();
+        for message in messages {
+            let sent = warn(py, &category, message);
+            if warned.is_ok() {
+                warned = sent;
+            }
+        }
+    }
+    (result, warned)
+}
+
+/// [`deferring_warnings`], raising the error of `f`, or else of a warning in place of the value
+/// of `f`.
+pub fn with_deferred_warnings<T>(py: Python<'_>, f: impl FnOnce() -> PyResult<T>) -> PyResult<T> {
+    let (result, warned) = deferring_warnings(py, f);
+    let value = result?;
+    warned?;
+    Ok(value)
+}
+
+/// `warnings.warn(message, category)`, which raises if a `warnings` filter says so.
+pub fn warn(py: Python<'_>, category: &Bound<'_, PyAny>, message: String) -> PyResult<()> {
+    // A warning's message can't hold a NUL.
+    let message = CString::new(message.replace('\0', "\\0")).expect("NULs were escaped");
+    PyErr::warn(py, category, &message, 1)
+}
+
+/// Sends the warnings the `mft` crate logs to Python's `warnings`.
 struct PyLogger {
     level: Level,
-    warnings_module: Py<PyAny>,
 }
 
 impl Log for PyLogger {
@@ -168,20 +228,27 @@ impl Log for PyLogger {
             return;
         }
 
-        if let Level::Warn = self.level {
-            let level_string = record.level().to_string();
-            Python::attach(|py| {
-                let message = format!(
-                    "{:<5} [{}] {}",
-                    level_string,
-                    record.module_path().unwrap_or_default(),
-                    record.args()
-                );
+        let message = format!(
+            "{:<5} [{}] {}",
+            record.level(),
+            record.module_path().unwrap_or_default(),
+            record.args()
+        );
+        let message = DEFERRED_WARNINGS.with_borrow_mut(|deferred| match deferred {
+            Some(messages) => {
+                messages.push(message);
+                None
+            }
+            None => Some(message),
+        });
 
-                let _ = self
-                    .warnings_module
-                    .bind(py)
-                    .call_method1("warn", (message,));
+        // Logged outside `with_deferred_warnings`, so no lock is held, and nothing can raise an
+        // error from here either.
+        if let Some(message) = message {
+            Python::attach(|py| {
+                if let Err(error) = warn(py, &py.get_type::<PyUserWarning>(), message) {
+                    error.write_unraisable(py, None);
+                }
             })
         }
     }
@@ -189,19 +256,8 @@ impl Log for PyLogger {
     fn flush(&self) {}
 }
 
-pub fn init_logging(py: Python<'_>) -> Result<(), SetLoggerError> {
-    let warnings = py
-        .import("warnings")
-        .expect("python to have warnings module")
-        .into_any()
-        .unbind();
-
-    let logger = PyLogger {
-        level: Level::Warn,
-        warnings_module: warnings,
-    };
-
-    log::set_boxed_logger(Box::new(logger))?;
+pub fn init_logging() -> Result<(), SetLoggerError> {
+    log::set_boxed_logger(Box::new(PyLogger { level: Level::Warn }))?;
     log::set_max_level(Level::Warn.to_level_filter());
 
     Ok(())
