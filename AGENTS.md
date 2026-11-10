@@ -91,7 +91,7 @@ Use plain words and full sentences: short ones, one idea each, in the active voi
 
 - The Python API is the contract. Mark a breaking change with **Breaking:** in `CHANGELOG.md`, and say what a caller must change.
 - The bindings build on the published `mft` crate. A change that needs unreleased `mft` code waits for an `mft` release.
-- CI and the `make` targets build with `--locked`, so a build fails when `Cargo.lock` does not fit `Cargo.toml`. When you change the dependencies, run `cargo update` or a plain `cargo build`, and commit `Cargo.lock`. This crate is itself named `mft`, so `cargo update -p mft` is ambiguous. Name the registry package: `cargo update -p 'registry+https://github.com/rust-lang/crates.io-index#mft@<old version>'`.
+- CI and the `make` targets build with `--locked`, so a build fails when `Cargo.lock` does not fit `Cargo.toml`. When you change the dependencies or `version`, run `cargo check`, which changes only what no longer fits in `Cargo.lock`, and commit the file. This crate is itself named `mft`, so `cargo update -p mft` is ambiguous. Name the registry package: `cargo update -p 'registry+https://github.com/rust-lang/crates.io-index#mft@<old version>'`.
 - The module runs on free-threaded Python. Keep it safe without the GIL, and keep `tests/test_threading.py` passing.
 - When `MFT_EXPECT_PYTHON` is set, as it is in CI, `build.rs` fails a build whose free-threaded flag does not match it. `scripts/check_wheel_abi.py` checks the tags of the built wheel. Keep both when you change the build.
 - Timestamps use `jiff`. Do not add `chrono`: Omer prefers `jiff`.
