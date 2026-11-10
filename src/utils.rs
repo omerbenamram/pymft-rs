@@ -16,38 +16,90 @@ pub enum FileOrFileLike {
     FileLike(PinnedFileLike),
 }
 
+/// How much of a Python file object is fetched at a time.
+const WINDOW_SIZE: usize = 64 * 1024;
+
 /// A Python file object, read at a position kept here instead of the object's own.
 ///
 /// The object stays usable from Python, where anything can move its position: the caller's own
-/// `seek` or `read`, or a second parser over the same object. So every read seeks first. A reader
-/// that trusts the stream to stay where its last read left it (as `MftParser` does for
-/// sequential entries) would return the bytes of another entry.
+/// `seek` or `read`, or a second parser over the same object. So every read of the object seeks
+/// first. A reader that trusts the stream to stay where its last read left it (as `MftParser`
+/// does for sequential entries) would return the bytes of another entry.
+///
+/// Reads that follow one another are served from a window fetched in one go, as a `seek` and a
+/// `read` call for every record cost more than parsing it. So bytes may be fetched up to one
+/// window before they are asked for. A read from somewhere else (the record of a parent
+/// directory, to resolve a path) fetches only what it asks for and leaves the window alone.
 #[derive(Debug)]
 pub struct PinnedFileLike {
     inner: PyFileLikeObject,
     position: u64,
+    /// The bytes of the object from `window_start` on, as last fetched.
+    window: Vec<u8>,
+    window_start: u64,
+    /// Where the last read ended, to tell the reads that follow one another.
+    last_read_end: u64,
 }
 
 impl PinnedFileLike {
     fn new(inner: PyFileLikeObject) -> Self {
-        PinnedFileLike { inner, position: 0 }
+        PinnedFileLike {
+            inner,
+            position: 0,
+            window: Vec::new(),
+            window_start: 0,
+            last_read_end: 0,
+        }
+    }
+
+    /// The fetched bytes from the position on, which are none if it is outside the window.
+    fn fetched(&self) -> &[u8] {
+        self.position
+            .checked_sub(self.window_start)
+            .and_then(|offset| self.window.get(usize::try_from(offset).ok()?..))
+            .unwrap_or_default()
+    }
+
+    /// Reads the object at the position, wherever anything else left it.
+    fn fetch(&self, buf: &mut [u8]) -> io::Result<usize> {
+        Python::attach(|py| {
+            self.inner.py_seek(py, SeekFrom::Start(self.position))?;
+            self.inner.py_read(py, buf)
+        })
     }
 }
 
 impl Read for PinnedFileLike {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let read = Python::attach(|py| {
-            self.inner.py_seek(py, SeekFrom::Start(self.position))?;
-            self.inner.py_read(py, buf)
-        })?;
+        let read = if !self.fetched().is_empty() {
+            let fetched = self.fetched();
+            let read = fetched.len().min(buf.len());
+            buf[..read].copy_from_slice(&fetched[..read]);
+            read
+        } else if self.position == self.last_read_end && buf.len() < WINDOW_SIZE {
+            // Emptied first, so a failed fetch leaves no bytes under the wrong offset.
+            self.window.clear();
+            self.window_start = self.position;
+            let mut window = vec![0; WINDOW_SIZE];
+            let fetched = self.fetch(&mut window)?;
+            window.truncate(fetched);
+            self.window = window;
+
+            let read = fetched.min(buf.len());
+            buf[..read].copy_from_slice(&self.window[..read]);
+            read
+        } else {
+            self.fetch(buf)?
+        };
         self.position += read as u64;
+        self.last_read_end = self.position;
         Ok(read)
     }
 }
 
 impl Seek for PinnedFileLike {
-    /// Only moves the position kept here, which the next read seeks to. Seeking from the end asks
-    /// the object, as that is the only way to learn its size.
+    /// Only moves the position kept here, which the next read is served from. Seeking from the
+    /// end asks the object, as that is the only way to learn its size.
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         self.position = match pos {
             SeekFrom::Start(offset) => offset,
