@@ -49,6 +49,9 @@ Pass `skip_errors=True` to skip them instead: each one skipped is reported as a 
 [`warnings` filters](https://docs.python.org/3/library/warnings.html#the-warnings-filter) can count, log or turn back into errors.
 Failing to read the file raises either way, and so does reading an `attribute_content` that fails to parse.
 
+What the parser notices but reads anyway, such as a record whose fixup values don't match, is reported as a `UserWarning`.
+With a filter that turns it into an error (`-W error`), the call that read the record raises it.
+
 ```python
 from mft import PyMftParser, PyMftAttributeX10, PyMftAttributeX30
 

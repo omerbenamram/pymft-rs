@@ -4,6 +4,8 @@ import io
 import itertools
 import os
 import sys
+import threading
+import warnings
 
 import pytest
 
@@ -562,3 +564,63 @@ def test_text_file_is_a_type_error(sample_mft: Path):
 def test_other_types_are_a_type_error(value):
     with pytest.raises(TypeError, match="expected a path .* not " + type(value).__name__):
         PyMftParser(value)
+
+
+@pytest.fixture
+def mft_with_a_bad_fixup(sample_mft: Path) -> io.BytesIO:
+    """The first sector of entry 3 doesn't end with the update sequence number, which the mft
+    crate logs a warning about."""
+    data = bytearray(sample_mft.read_bytes()[: 16 * ENTRY_SIZE])
+    data[3 * ENTRY_SIZE + 510] ^= 0xFF
+    return io.BytesIO(bytes(data))
+
+
+def test_a_logged_warning_is_a_python_warning(mft_with_a_bad_fixup: io.BytesIO):
+    parser = PyMftParser(mft_with_a_bad_fixup)
+    with pytest.warns(UserWarning, match="fixup bytes are not equal") as caught:
+        entry = parser.get_entry(3)
+    assert entry.valid_fixup is False
+    assert len(caught) == 1
+    # Reported at the caller's line, as `warnings.warn` does.
+    assert caught[0].filename == __file__
+
+
+@pytest.mark.filterwarnings("error::UserWarning")
+def test_logged_warnings_can_be_errors(mft_with_a_bad_fixup: io.BytesIO):
+    parser = PyMftParser(mft_with_a_bad_fixup)
+    with pytest.raises(UserWarning, match="fixup bytes are not equal"):
+        parser.get_entry(3)
+
+    for method in ("entries", "entries_json", "entries_csv"):
+        entries = getattr(parser, method)()
+        for _ in range(3):
+            next(entries)
+        with pytest.raises(UserWarning, match="fixup bytes are not equal"):
+            next(entries)
+        # The iterator has stepped past entry 3.
+        assert len(list(entries)) == 12
+
+
+@pytest.mark.filterwarnings("always::UserWarning")
+def test_a_warnings_hook_can_use_the_parser(mft_with_a_bad_fixup: io.BytesIO, monkeypatch):
+    parser = PyMftParser(mft_with_a_bad_fixup)
+    entries = parser.entries()
+    seen = []
+
+    def hook(message, *args, **kwargs):
+        seen.append((parser.get_entry(0).full_path, next(entries).entry_id))
+
+    monkeypatch.setattr(warnings, "showwarning", hook)
+
+    # On a thread, so that a hook waiting for the parser's lock fails the test.
+    def read():
+        parser.get_entry(3)
+        for _ in range(3):
+            next(entries)
+
+    thread = threading.Thread(target=read, daemon=True)
+    thread.start()
+    thread.join(timeout=30)
+    assert not thread.is_alive(), "the warnings hook is waiting for the parser"
+    # Once for `get_entry(3)`, and once when the iterator reads entry 3.
+    assert seen == [("$MFT", 0), ("$MFT", 4)]
