@@ -21,6 +21,7 @@ To install from PyPi - `pip install mft`
 Wheels are built using the `abi3` tag, so a single wheel works for CPython 3.10 and newer.
 Free-threaded CPython 3.14 (`python3.14t`) gets its own `cp314t` wheel; importing `mft` there
 keeps the GIL disabled, and parsers can be created on one thread and consumed on another.
+Threads can share a parser, and an iterator too: each entry it yields goes to one of them.
 
 Supported platforms are:
   - Linux x86_64 and aarch64 (manylinux and musllinux; aarch64 and musl are cross-compiled with zig)

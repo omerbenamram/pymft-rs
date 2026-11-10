@@ -19,6 +19,11 @@ and this project adheres to
   an extension record, and the size of a named stream when one came before the unnamed stream.
   Building the first entry whose `$ATTRIBUTE_LIST` is non-resident or fails to parse reads the
   whole MFT once, to find such files' other records.
+- Threads can share an iterator (`entries()`, `entries_json()`, `entries_csv()`, `attributes()`,
+  `PyMftAttributeX20.entries()`): each item goes to one of them. A second thread calling `next()`
+  got `RuntimeError: Already borrowed`.
+- A file-like object whose `read` or `seek` calls back into the parser or iterator that is reading
+  it gets a `RuntimeError`. The parser waited for itself forever.
 
 ## [0.10.1] - 2026-11-03
 

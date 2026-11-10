@@ -3,6 +3,7 @@
 
 mod attribute;
 mod entry;
+mod lock;
 mod utils;
 
 pub(crate) mod err;
@@ -18,7 +19,6 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use pyo3::exceptions;
 use pyo3::prelude::*;
-use pyo3::sync::MutexExt;
 
 use crate::attribute::{
     PyMftAce, PyMftAcl, PyMftAttribute, PyMftAttributeNonResident, PyMftAttributeOther,
@@ -29,6 +29,7 @@ use crate::attribute::{
 };
 use crate::entry::PyMftAttributesIter;
 use crate::err::{PyMftError, skip_or_raise};
+use crate::lock::{ReentryCheckedGuard, ReentryCheckedMutex};
 use crate::utils::{FileOrFileLike, init_logging};
 use csv::WriterBuilder;
 use pyo3::types::{PyBytes, PyString};
@@ -42,19 +43,17 @@ pub trait ReadSeek: Read + Seek {
 impl<T: Read + Seek> ReadSeek for T {}
 
 type BoxedParser = MftParser<Box<dyn ReadSeek + Send + Sync>>;
-type SharedParser = Arc<Mutex<BoxedParser>>;
+type SharedParser = Arc<ReentryCheckedMutex<BoxedParser>>;
 
 /// Locks the parser shared by a `PyMftParser` and its iterators.
 ///
-/// The GIL is released while waiting, so a thread holding the lock can call back into Python (a
-/// file-like object's `read`) without deadlocking. The lock is not reentrant: Python code run
-/// while it is held (a file-like object's `read`, a `warnings` hook, a signal handler) must not
-/// call back into the same parser. A poisoned lock is recovered, since a panic can only happen
-/// after an entry's bytes were read.
-fn lock_parser<'a>(parser: &'a SharedParser, py: Python<'_>) -> MutexGuard<'a, BoxedParser> {
-    parser
-        .lock_py_attached(py)
-        .unwrap_or_else(PoisonError::into_inner)
+/// The lock is held while Python code runs (a file-like object's `read` and `seek`). If that
+/// code calls back into the same parser, it gets a `RuntimeError`.
+fn lock_parser<'a>(
+    parser: &'a SharedParser,
+    py: Python<'_>,
+) -> PyResult<ReentryCheckedGuard<'a, BoxedParser>> {
+    parser.lock(py, "the parser")
 }
 
 pub enum Output {
@@ -119,7 +118,7 @@ impl PyMftParser {
 
         Ok(PyMftParser {
             entry_count: parser.get_entry_count(),
-            inner: Arc::new(Mutex::new(parser)),
+            inner: Arc::new(ReentryCheckedMutex::new(parser)),
             skip_errors,
         })
     }
@@ -147,7 +146,7 @@ impl PyMftParser {
                 )));
             }
         };
-        let mut parser = lock_parser(&self.inner, py);
+        let mut parser = lock_parser(&self.inner, py)?;
         let entry = parser.get_entry(entry_id).map_err(PyMftError)?;
         if &entry.header.signature == ZERO_HEADER {
             return Ok(None);
@@ -200,69 +199,90 @@ impl PyMftParser {
             PyMftEntriesIterator {
                 total_number_of_records: self.entry_count,
                 inner: Arc::clone(&self.inner),
-                current_record: 0,
                 output_format,
-                csv_header_written: false,
                 skip_errors: self.skip_errors,
+                state: Mutex::new(IteratorState {
+                    current_record: 0,
+                    csv_header_written: false,
+                }),
             },
         )
     }
 }
 
-#[pyclass(module = "mft")]
+/// Threads can share an iterator: each entry goes to one of them.
+#[pyclass(frozen, module = "mft")]
 pub struct PyMftEntriesIterator {
     inner: SharedParser,
     total_number_of_records: u64,
-    current_record: u64,
     output_format: Output,
-    csv_header_written: bool,
     skip_errors: bool,
+    /// Only locked with the parser locked, so it is never waited for, and a thread that calls
+    /// the iterator again from its file object's `read` is stopped at the parser's lock. Held as
+    /// long as the parser: entries leave in order, and the CSV header goes with the first of them.
+    state: Mutex<IteratorState>,
+}
+
+struct IteratorState {
+    current_record: u64,
+    csv_header_written: bool,
 }
 
 #[pymethods]
 impl PyMftEntriesIterator {
-    fn __iter__(slf: PyRefMut<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
-        Ok(slf.into())
+    fn __iter__(slf: PyRef<Self>) -> Py<PyMftEntriesIterator> {
+        slf.into()
     }
 
-    fn __next__(&mut self, py: Python) -> PyResult<Option<Py<PyAny>>> {
-        let mut parser = lock_parser(&self.inner, py);
-        while self.current_record < self.total_number_of_records {
-            let id = self.current_record;
-            self.current_record += 1;
+    fn __next__(&self, py: Python) -> PyResult<Option<Py<PyAny>>> {
+        loop {
+            let mut parser = lock_parser(&self.inner, py)?;
+            let mut state = self.lock_state();
 
-            let entry = match parser.get_entry(id) {
-                Ok(entry) if &entry.header.signature == ZERO_HEADER => continue,
-                Ok(entry) => entry,
-                // The file failed to read, which skipping the entry doesn't fix.
-                Err(error @ mft_rs::err::Error::IoError { .. }) => {
-                    return Err(PyMftError(error).into());
+            let error = loop {
+                if state.current_record >= self.total_number_of_records {
+                    return Ok(None);
                 }
-                Err(error) => {
-                    // Unlocked while warning, as a `warnings` hook may use the parser.
-                    drop(parser);
-                    skip_or_raise(py, self.skip_errors, format_args!("entry {id}"), error)?;
-                    parser = lock_parser(&self.inner, py);
-                    continue;
+                let id = state.current_record;
+                state.current_record += 1;
+
+                let entry = match parser.get_entry(id) {
+                    Ok(entry) if &entry.header.signature == ZERO_HEADER => continue,
+                    Ok(entry) => entry,
+                    // The file failed to read, which skipping the entry doesn't fix.
+                    Err(error @ mft_rs::err::Error::IoError { .. }) => {
+                        return Err(PyMftError(error).into());
+                    }
+                    Err(error) => break (id, error),
+                };
+                return match self.output_format {
+                    Output::Python => {
+                        PyMftEntry::from_mft_entry(py, entry, &mut parser, self.skip_errors)
+                            .map(Py::into_any)
+                    }
+                    Output::JSON => Self::entry_to_json(entry, py),
+                    Output::CSV => {
+                        Self::entry_to_csv(&mut state.csv_header_written, &mut parser, entry, py)
+                    }
                 }
+                .map(Some);
             };
-            return match self.output_format {
-                Output::Python => {
-                    PyMftEntry::from_mft_entry(py, entry, &mut parser, self.skip_errors)
-                        .map(Py::into_any)
-                }
-                Output::JSON => Self::entry_to_json(entry, py),
-                Output::CSV => {
-                    Self::entry_to_csv(&mut self.csv_header_written, &mut parser, entry, py)
-                }
-            }
-            .map(Some);
+
+            // Unlocked while warning, as a `warnings` hook may use the parser or this iterator.
+            drop(state);
+            drop(parser);
+            let (id, error) = error;
+            skip_or_raise(py, self.skip_errors, format_args!("entry {id}"), error)?;
         }
-        Ok(None)
     }
 }
 
 impl PyMftEntriesIterator {
+    /// For a caller that has the parser locked.
+    fn lock_state(&self) -> MutexGuard<'_, IteratorState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn entry_to_json(entry: MftEntry, py: Python) -> PyResult<Py<PyAny>> {
         let json = sonic_rs::to_string(&entry).map_err(|_| {
             PyErr::new::<exceptions::PyRuntimeError, _>("JSON Serialization failed")

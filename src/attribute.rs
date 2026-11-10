@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use jiff::Timestamp;
 use mft_rs::attribute::MftAttributeContent;
@@ -301,19 +301,23 @@ pub struct PyMftAttributeX20 {
     entries: Vec<Py<PyMftAttributeX20Entry>>,
 }
 
-#[pyclass(module = "mft")]
+/// Threads can share an iterator: each entry goes to one of them.
+#[pyclass(frozen, module = "mft")]
 pub struct PyMftX20EntriesIter {
-    inner: std::vec::IntoIter<Py<PyMftAttributeX20Entry>>,
+    inner: Mutex<std::vec::IntoIter<Py<PyMftAttributeX20Entry>>>,
 }
 
 #[pymethods]
 impl PyMftX20EntriesIter {
-    fn __iter__(slf: PyRefMut<Self>) -> PyResult<Py<Self>> {
-        Ok(slf.into())
+    fn __iter__(slf: PyRef<Self>) -> Py<Self> {
+        slf.into()
     }
 
-    fn __next__(&mut self) -> Option<Py<PyMftAttributeX20Entry>> {
-        self.inner.next()
+    fn __next__(&self) -> Option<Py<PyMftAttributeX20Entry>> {
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .next()
     }
 }
 
@@ -339,7 +343,7 @@ impl PyMftAttributeX20 {
         Py::new(
             py,
             PyMftX20EntriesIter {
-                inner: entries.into_iter(),
+                inner: Mutex::new(entries.into_iter()),
             },
         )
     }

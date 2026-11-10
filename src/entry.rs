@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::ReadSeek;
 use pyo3::prelude::*;
@@ -76,7 +76,7 @@ impl PyMftEntry {
             PyMftAttributesIter {
                 entry_id: self.entry_id,
                 skip_errors: self.skip_errors,
-                inner: attributes.into_iter().enumerate(),
+                inner: Mutex::new(attributes.into_iter().enumerate()),
             },
         )
     }
@@ -121,26 +121,35 @@ impl PyMftEntry {
     }
 }
 
-#[pyclass(module = "mft")]
+/// Threads can share an iterator: each attribute goes to one of them.
+#[pyclass(frozen, module = "mft")]
 pub struct PyMftAttributesIter {
     entry_id: u64,
     skip_errors: bool,
-    inner: std::iter::Enumerate<
-        std::vec::IntoIter<Result<Py<PyMftAttribute>, Box<mft_rs::err::Error>>>,
-    >,
+    inner: Mutex<AttributesIter>,
 }
+
+type AttributesIter =
+    std::iter::Enumerate<std::vec::IntoIter<Result<Py<PyMftAttribute>, Box<mft_rs::err::Error>>>>;
 
 #[pymethods]
 impl PyMftAttributesIter {
-    fn __iter__(slf: PyRefMut<Self>) -> PyResult<Py<PyMftAttributesIter>> {
-        Ok(slf.into())
+    fn __iter__(slf: PyRef<Self>) -> Py<PyMftAttributesIter> {
+        slf.into()
     }
 
-    fn __next__(&mut self, py: Python) -> PyResult<Option<Py<PyMftAttribute>>> {
-        for (index, attribute) in self.inner.by_ref() {
-            match attribute {
-                Ok(attribute) => return Ok(Some(attribute)),
-                Err(error) => skip_or_raise(
+    fn __next__(&self, py: Python) -> PyResult<Option<Py<PyMftAttribute>>> {
+        loop {
+            // Only held to step, not while a warning runs Python code.
+            let next = self
+                .inner
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .next();
+            match next {
+                None => return Ok(None),
+                Some((_, Ok(attribute))) => return Ok(Some(attribute)),
+                Some((index, Err(error))) => skip_or_raise(
                     py,
                     self.skip_errors,
                     format_args!("attribute {index} of entry {}", self.entry_id),
@@ -148,7 +157,6 @@ impl PyMftAttributesIter {
                 )?,
             }
         }
-        Ok(None)
     }
 }
 

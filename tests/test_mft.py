@@ -2,6 +2,7 @@ import csv
 import datetime
 import io
 import itertools
+import threading
 
 import pytest
 
@@ -617,3 +618,59 @@ def test_file_size_leaves_out_data_that_fails_to_parse(sample_mft: Path):
     rows = csv.DictReader(io.StringIO(b"".join(parser.entries_csv()).decode()))
     assert {int(row["EntryId"]): row["FileSize"] for row in rows}[209] == "0"
     assert parser.get_entry(209).file_size == 0
+
+
+class CallsBack(io.BytesIO):
+    """A file object whose next `read` calls `callback` first, keeping what that raises."""
+
+    callback = None
+    raised = None
+
+    def read(self, size=-1):
+        callback, self.callback = self.callback, None
+        if callback is not None:
+            try:
+                callback()
+            except Exception as error:
+                self.raised = error
+        return super().read(size)
+
+
+def run_or_fail(function):
+    """Runs on a thread, so that a call that waits for itself fails the test instead."""
+    thread = threading.Thread(target=function, daemon=True)
+    thread.start()
+    thread.join(timeout=30)
+    assert not thread.is_alive(), "still waiting"
+
+
+@pytest.mark.parametrize("method", ["entries", "entries_json", "entries_csv"])
+def test_an_iterator_called_from_its_own_read_raises(sample_mft: Path, method: str):
+    # More than is fetched at a time (64 KiB), so iterating goes back to `read`.
+    source = CallsBack(sample_mft.read_bytes()[: 256 * ENTRY_SIZE])
+    entries = getattr(PyMftParser(source), method)()
+    total = len(list(getattr(PyMftParser(source), method)()))
+    next(entries)
+
+    source.callback = lambda: next(entries)
+    seen = []
+    run_or_fail(lambda: seen.extend(entries))
+
+    assert isinstance(source.raised, RuntimeError)
+    assert "the parser is already in use by this thread" in str(source.raised)
+    # The call that was running went on.
+    assert len(seen) == total - 1
+
+
+def test_a_parser_called_from_its_own_read_raises(sample_mft: Path):
+    source = CallsBack(sample_mft.read_bytes()[: 256 * ENTRY_SIZE])
+    parser = PyMftParser(source)
+
+    source.callback = lambda: parser.get_entry(0)
+    entries = []
+    # Past what was fetched with the first entries.
+    run_or_fail(lambda: entries.append(parser.get_entry(200)))
+
+    assert isinstance(source.raised, RuntimeError)
+    assert "the parser is already in use by this thread" in str(source.raised)
+    assert entries[0].entry_id == 200
