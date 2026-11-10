@@ -20,7 +20,9 @@ and this project adheres to
 - `PyMftParser.data_streams(entry_id)` returns a file's `$DATA` streams as `PyMftDataStream`s
   (name, size, the record it is stored in, and the content of resident ones), including streams
   stored in extension records, so resident files and alternate data streams such as
-  `Zone.Identifier` can be exported, as `mft_dump --extract-resident-streams` does.
+  `Zone.Identifier` can be exported, as `mft_dump --extract-resident-streams` does. An extension
+  record has none when its base record lists it (they are the base record's), and its own when
+  the base record doesn't, as `mft_dump` decides.
 
 ### Changed
 

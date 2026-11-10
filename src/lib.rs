@@ -9,9 +9,9 @@ mod utils;
 pub(crate) mod err;
 pub use entry::PyMftEntry;
 use mft_rs::attribute::MftAttributeType;
-use mft_rs::attribute::header::ResidentialHeader;
+use mft_rs::attribute::header::{MftAttributeHeader, ResidentialHeader};
 use mft_rs::csv::FlatMftEntryWithName;
-use mft_rs::entry::ZERO_HEADER;
+use mft_rs::entry::{ZERO_HEADER, find_best_name_attribute_in};
 use mft_rs::{MftEntry, MftParser};
 
 use std::fs::File;
@@ -205,8 +205,9 @@ impl PyMftParser {
     /// stored in its extension records: the unnamed stream first, then the named ones
     /// (alternate data streams), in the order they are stored. A resident stream carries its
     /// content in `data`. A non-resident one has `data=None`, since its content is on the volume
-    /// rather than in the MFT. An all-zero record and an extension record have none (ask for its
-    /// base record). Raises `IndexError` like `get_entry`.
+    /// rather than in the MFT. An all-zero record has none, and neither has an extension record
+    /// that its base record lists (ask for the base record). Raises `IndexError` like
+    /// `get_entry`.
     fn data_streams(
         &self,
         py: Python,
@@ -216,62 +217,54 @@ impl PyMftParser {
         let records = with_deferred_warnings(py, || {
             let mut parser = lock_parser(&self.inner, py)?;
             let entry = parser.get_entry(entry_id).map_err(PyMftError)?;
-            // An all-zero record (which `get_entry` returns as `None`) has none, and an extension
-            // record's streams belong to the file of its base record.
-            if &entry.header.signature == ZERO_HEADER || !entry.header.is_base_record() {
+            // An all-zero record (which `get_entry` returns as `None`) has none, and the streams
+            // of an extension record its base record lists belong to the base record's file.
+            if &entry.header.signature == ZERO_HEADER || is_listed_by_its_base(&mut parser, &entry)
+            {
                 return Ok(Vec::new());
             }
             let extensions = parser.get_extension_entries(&entry);
-            Ok(std::iter::once(entry).chain(extensions).collect())
+            Ok(std::iter::once(entry).chain(extensions).collect::<Vec<_>>())
         })?;
 
         let mut streams = Vec::new();
         for record in &records {
             let record_number = record.header.record_number;
-            // Only the header is parsed, so a non-resident stream whose data runs don't decode
-            // still gets listed: its content isn't read here anyway.
             for attribute in
                 record.iter_attribute_records_matching(Some(vec![MftAttributeType::DATA]))
             {
-                let what = format_args!("a $DATA attribute of entry {record_number}");
-                let (header, attribute_record) = match attribute {
-                    Ok(attribute) => attribute,
+                // A malformed attribute header ends the walk: the attributes after it can't be
+                // found.
+                let ends_walk = attribute.is_err();
+                match attribute.and_then(|(header, attribute_record)| {
+                    DataStream::from_attribute(record_number, &header, attribute_record)
+                }) {
+                    Ok(stream) => streams.extend(stream),
                     Err(error) => {
-                        skip_or_raise(py, self.skip_errors, what, error)?;
-                        continue;
-                    }
-                };
-                // The later pieces of a fragmented non-resident stream.
-                if header.is_continuation() {
-                    continue;
-                }
-                let data = match &header.residential_header {
-                    ResidentialHeader::Resident(resident) => {
-                        match resident.value(attribute_record) {
-                            Ok(value) => Some(PyBytes::new(py, value).unbind()),
-                            Err(error) => {
-                                skip_or_raise(py, self.skip_errors, what, error)?;
-                                continue;
-                            }
+                        let what = if ends_walk {
+                            "the rest of the attributes"
+                        } else {
+                            "a $DATA attribute"
+                        };
+                        skip_or_raise(
+                            py,
+                            self.skip_errors,
+                            format_args!("{what} of entry {record_number}"),
+                            error,
+                        )?;
+                        if ends_walk {
+                            break;
                         }
                     }
-                    ResidentialHeader::NonResident(_) => None,
-                };
-                streams.push(Py::new(
-                    py,
-                    PyMftDataStream {
-                        name: header.name.to_string(),
-                        size: header.value_size(),
-                        record_entry_id: record_number,
-                        attribute_id: header.instance,
-                        data,
-                    },
-                )?);
+                }
             }
         }
-        // The unnamed stream first.
-        streams.sort_by_key(|stream| !stream.get().name.is_empty());
-        Ok(streams)
+        // The unnamed stream first. The sort is stable, so the rest stay in storage order.
+        streams.sort_by_key(|stream| !stream.name.is_empty());
+        streams
+            .into_iter()
+            .map(|stream| Py::new(py, stream.into_py_stream(py)))
+            .collect()
     }
 
     fn __iter__(slf: PyRef<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
@@ -352,6 +345,7 @@ impl PyMftEntriesIterator {
             match step {
                 Step::End => return Ok(None),
                 Step::Yield(item) => return Ok(Some(item)),
+                Step::Skip => {}
                 Step::YieldCsv { row, header_length } => {
                     // The header goes with the first row that is returned, which the first one
                     // read may not be.
@@ -376,8 +370,11 @@ impl PyMftEntriesIterator {
 enum Step {
     /// There are no more entries.
     End,
-    /// The entry, as an object or JSON.
+    /// The entry, as an object, JSON or bodyfile lines.
     Yield(Py<PyAny>),
+    /// The entry has no output (bodyfile lines), so the iterator goes on to the next one. Its
+    /// warnings are still sent, before the next entry is read.
+    Skip,
     /// The entry's CSV row, after a header of this length if none was returned when it was read.
     YieldCsv { row: Vec<u8>, header_length: usize },
     /// The entry with this number failed to parse.
@@ -415,11 +412,10 @@ impl PyMftEntriesIterator {
                     let with_header = !self.csv_header_written.load(Ordering::Relaxed);
                     Self::entry_to_csv(with_header, &mut parser, entry)
                 }
-                // An entry without bodyfile lines is skipped.
-                Output::Bodyfile => match Self::entry_to_bodyfile(&mut parser, &entry, py)? {
-                    Some(lines) => Ok(Step::Yield(lines)),
-                    None => continue,
-                },
+                // An entry without bodyfile lines is skipped, after its warnings are sent: they
+                // are its own, not the next entry's.
+                Output::Bodyfile => Self::entry_to_bodyfile(&mut parser, &entry, py)
+                    .map(|lines| lines.map_or(Step::Skip, Step::Yield)),
             };
         }
         Ok(Step::End)
@@ -432,10 +428,15 @@ impl PyMftEntriesIterator {
         entry: &MftEntry,
         py: Python,
     ) -> PyResult<Option<Py<PyAny>>> {
+        // `write_entry` writes nothing for these either. Checked first, so their paths aren't
+        // resolved: an extension record can hold `$FILE_NAME`s of its base record's file.
         if !entry.header.is_base_record() {
             return Ok(None);
         }
         let extensions = parser.get_extension_entries(entry);
+        if find_best_name_attribute_in(entry, &extensions).is_none() {
+            return Ok(None);
+        }
         // As `mft_dump -o bodyfile` does, a path that can't be resolved is left empty.
         let full_path = parser
             .get_full_path_for_entry(entry)
@@ -485,6 +486,69 @@ impl PyMftEntriesIterator {
     }
 }
 
+/// Whether `entry` is an extension record that its base record lists, as `mft_dump` decides
+/// which records' streams to export. A base record that was since reused for another file
+/// doesn't list it.
+fn is_listed_by_its_base(parser: &mut BoxedParser, entry: &MftEntry) -> bool {
+    if entry.header.is_base_record() {
+        return false;
+    }
+    let record_number = entry.header.record_number;
+    parser
+        .get_entry(entry.header.base_reference.entry)
+        .is_ok_and(|base| {
+            parser
+                .get_extension_entries(&base)
+                .iter()
+                .any(|extension| extension.header.record_number == record_number)
+        })
+}
+
+/// A `$DATA` stream read from a record, before it becomes a `PyMftDataStream`.
+struct DataStream<'a> {
+    name: String,
+    size: u64,
+    record_entry_id: u64,
+    attribute_id: u16,
+    data: Option<&'a [u8]>,
+}
+
+impl<'a> DataStream<'a> {
+    /// The stream a `$DATA` attribute of record `record_entry_id` starts, or `None` for a later
+    /// piece of a fragmented non-resident stream. Only the header is parsed, so a non-resident
+    /// stream whose data runs don't decode is still listed: its content isn't read here anyway.
+    fn from_attribute(
+        record_entry_id: u64,
+        header: &MftAttributeHeader,
+        attribute_record: &'a [u8],
+    ) -> mft_rs::err::Result<Option<Self>> {
+        if header.is_continuation() {
+            return Ok(None);
+        }
+        let data = match &header.residential_header {
+            ResidentialHeader::Resident(resident) => Some(resident.value(attribute_record)?),
+            ResidentialHeader::NonResident(_) => None,
+        };
+        Ok(Some(DataStream {
+            name: header.name.to_utf8_string(),
+            size: header.value_size(),
+            record_entry_id,
+            attribute_id: header.instance,
+            data,
+        }))
+    }
+
+    fn into_py_stream(self, py: Python) -> PyMftDataStream {
+        PyMftDataStream {
+            name: self.name,
+            size: self.size,
+            record_entry_id: self.record_entry_id,
+            attribute_id: self.attribute_id,
+            data: self.data.map(|data| PyBytes::new(py, data).unbind()),
+        }
+    }
+}
+
 /// A `$DATA` stream of a file, from `PyMftParser.data_streams`.
 #[pyclass(frozen, module = "mft")]
 pub struct PyMftDataStream {
@@ -513,14 +577,14 @@ impl PyMftDataStream {
         self.data.is_some()
     }
 
-    fn __repr__(&self) -> String {
-        format!(
-            "PyMftDataStream(name={:?}, size={}, record_entry_id={}, is_resident={})",
-            self.name,
+    fn __repr__(&self, py: Python) -> PyResult<String> {
+        Ok(format!(
+            "<PyMftDataStream name={} size={} record_entry_id={} is_resident={}>",
+            PyString::new(py, &self.name).repr()?,
             self.size,
             self.record_entry_id,
-            self.is_resident()
-        )
+            if self.is_resident() { "True" } else { "False" }
+        ))
     }
 }
 

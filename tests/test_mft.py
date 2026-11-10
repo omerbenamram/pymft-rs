@@ -498,6 +498,9 @@ def test_data_streams(sample_mft: Path):
     assert streams[0].data is None
     assert streams[1].data == b"[ZoneTransfer]\r\nZoneId=3\r\n"
     assert streams[1].size == len(streams[1].data)
+    assert repr(streams[1]) == (
+        "<PyMftDataStream name='Zone.Identifier' size=26 record_entry_id=12938 is_resident=True>"
+    )
 
     # An all-zero record.
     assert parser.get_entry(16) is None
@@ -508,6 +511,81 @@ def test_data_streams(sample_mft: Path):
 
     with pytest.raises(IndexError):
         parser.data_streams(parser.number_of_entries())
+
+
+def test_data_streams_of_an_extension_record_its_base_does_not_list(sample_mft: Path):
+    # Entry 12940 is an extension record of 12938. With its base reference's sequence number
+    # bumped, it no longer belongs to the file now in record 12938, so its stream is its own.
+    data = bytearray(sample_mft.read_bytes())
+    sequence = 12940 * ENTRY_SIZE + 0x20 + 6
+    data[sequence] ^= 0xFF
+    parser = PyMftParser(io.BytesIO(bytes(data)))
+
+    assert [(s.name, s.record_entry_id) for s in parser.data_streams(12940)] == [("", 12940)]
+    assert [(s.name, s.record_entry_id) for s in parser.data_streams(12938)] == [
+        ("Zone.Identifier", 12938)
+    ]
+
+
+@pytest.fixture
+def mft_with_a_malformed_attribute_after_a_stream(sample_mft: Path) -> io.BytesIO:
+    """Entry 12938's `$END` marker, after its `Zone.Identifier` stream, is replaced by an
+    attribute with a length of 0, which ends the walk over its attributes."""
+    data = bytearray(sample_mft.read_bytes())
+    end = attribute_offset(data, 12938, 0xFFFF_FFFF)
+    data[end : end + 8] = (0x100).to_bytes(4, "little") + bytes(4)
+    return io.BytesIO(bytes(data))
+
+
+def test_data_streams_keeps_the_streams_before_a_malformed_attribute(
+    mft_with_a_malformed_attribute_after_a_stream: io.BytesIO,
+):
+    parser = PyMftParser(mft_with_a_malformed_attribute_after_a_stream, skip_errors=True)
+
+    with pytest.warns(
+        RuntimeWarning, match="^Skipping the rest of the attributes of entry 12938: OSError"
+    ) as caught:
+        streams = parser.data_streams(12938)
+
+    assert len(caught) == 1
+    assert [(s.name, s.record_entry_id) for s in streams] == [
+        ("", 12940),
+        ("Zone.Identifier", 12938),
+    ]
+
+
+def test_data_streams_raises_for_a_malformed_attribute(
+    mft_with_a_malformed_attribute_after_a_stream: io.BytesIO,
+):
+    parser = PyMftParser(mft_with_a_malformed_attribute_after_a_stream)
+
+    with pytest.raises(OSError) as raised:
+        parser.data_streams(12938)
+    assert "$DATA" not in str(raised.value)
+
+
+@pytest.mark.filterwarnings("error::UserWarning")
+def test_bodyfile_warnings_of_a_skipped_record_are_its_own(sample_mft: Path):
+    # Entry 12941 is an extension record, which has no bodyfile lines of its own, and 12942 the
+    # next file. A warning about 12941 (its fixup) mustn't cost 12942 its lines.
+    data = bytearray(sample_mft.read_bytes())
+    expected = list(PyMftParser(io.BytesIO(bytes(data))).entries_bodyfile())
+    data[12941 * ENTRY_SIZE + 510] ^= 0xFF
+    lines = PyMftParser(io.BytesIO(bytes(data))).entries_bodyfile()
+
+    seen, warned = [], 0
+    while True:
+        try:
+            seen.append(next(lines))
+        except UserWarning:
+            warned += 1
+        except StopIteration:
+            break
+
+    # The warning is raised for 12941 alone, and 12942 is returned.
+    assert warned == 1
+    assert seen == expected
+    assert any("|12942-" in chunk for chunk in seen)
 
 
 def entry_summaries(entries):
