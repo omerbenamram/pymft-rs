@@ -6,7 +6,8 @@ use pyo3::prelude::*;
 use crate::attribute::PyMftAttribute;
 use crate::err::skip_or_raise;
 use crate::utils::windows_path;
-use mft_rs::attribute::MftAttributeType;
+use mft_rs::attribute::header::MftAttributeHeader;
+use mft_rs::attribute::{MftAttributeContent, MftAttributeType};
 use mft_rs::{MftEntry, MftParser};
 
 #[pyclass(module = "mft")]
@@ -48,6 +49,10 @@ pub struct PyMftEntry {
     pub total_entry_size: u32,
     #[pyo3(get)]
     pub full_path: String,
+    /// The size of the unnamed `$DATA` stream, or of a named one if there is none, also when an
+    /// extension record holds it. 0 without a `$DATA` attribute. The same as `FileSize` in
+    /// `entries_csv()`. Building the first entry whose `$ATTRIBUTE_LIST` is non-resident or fails
+    /// to parse reads the whole MFT once, to find such files' other records.
     #[pyo3(get)]
     pub file_size: u64,
 }
@@ -89,10 +94,7 @@ impl PyMftEntry {
             .expect("unreachable")
             .map_or_else(|| "[UNKNOWN]".to_string(), |path| windows_path(&path));
 
-        let file_size = entry
-            .iter_attribute_records_matching(Some(vec![MftAttributeType::DATA]))
-            .find_map(Result::ok)
-            .map_or(0, |(header, _)| header.value_size());
+        let file_size = file_size(&entry, parser);
 
         Py::new(
             py,
@@ -148,4 +150,74 @@ impl PyMftAttributesIter {
         }
         Ok(None)
     }
+}
+
+/// A file's size as `entries_csv()` gives it (`FlatMftEntryWithName`): that of its unnamed `$DATA`
+/// stream, or of a named one if there is none, among the `$DATA` attributes that parse. Records
+/// that continue a stream started elsewhere don't hold its size.
+///
+/// A file with an `$ATTRIBUTE_LIST` can have its `$DATA` in an extension record. Those are only
+/// read when the base record doesn't decide the size: it has no unnamed `$DATA`, and a list that
+/// names a `$DATA` in another record, or doesn't say (a non-resident list is outside the MFT, and
+/// one can fail to parse). For a list that doesn't say, the parser finds the records by reading
+/// the whole MFT, once: it keeps what it found.
+fn file_size(entry: &MftEntry, parser: &mut MftParser<impl ReadSeek>) -> u64 {
+    /// A `$DATA` that starts a stream and parses, as (is named, size).
+    fn stream(header: &MftAttributeHeader, record: &[u8]) -> Option<(bool, u64)> {
+        (header.type_code == MftAttributeType::DATA
+            && !header.is_continuation()
+            && MftAttributeContent::from_record(record, header).is_ok())
+        .then(|| (!header.name.is_empty(), header.value_size()))
+    }
+
+    let mut named_in_base = None;
+    let mut data_may_be_elsewhere = false;
+    for (header, record) in entry
+        .iter_attribute_records_matching(Some(vec![
+            MftAttributeType::AttributeList,
+            MftAttributeType::DATA,
+        ]))
+        .filter_map(Result::ok)
+    {
+        if header.type_code == MftAttributeType::AttributeList {
+            let content = MftAttributeContent::from_record(record, &header).ok();
+            data_may_be_elsewhere |= content
+                .as_ref()
+                .and_then(MftAttributeContent::as_attribute_list)
+                .is_none_or(|list| {
+                    list.entries.iter().any(|listed| {
+                        listed.attribute_type == MftAttributeType::DATA as u32
+                            && listed.segment_reference.entry != entry.header.record_number
+                    })
+                });
+        } else {
+            match stream(&header, record) {
+                Some((false, size)) => return size,
+                Some((true, size)) => named_in_base = named_in_base.or(Some(size)),
+                None => {}
+            }
+        }
+    }
+    if !data_may_be_elsewhere {
+        return named_in_base.unwrap_or(0);
+    }
+
+    // The unnamed stream of an extension record, else the first named one, the base record's
+    // first.
+    let extensions = parser.get_extension_entries(entry);
+    let mut named = named_in_base;
+    for (header, record) in extensions
+        .iter()
+        .flat_map(|record| {
+            record.iter_attribute_records_matching(Some(vec![MftAttributeType::DATA]))
+        })
+        .filter_map(Result::ok)
+    {
+        match stream(&header, record) {
+            Some((false, size)) => return size,
+            Some((true, size)) => named = named.or(Some(size)),
+            None => {}
+        }
+    }
+    named.unwrap_or(0)
 }

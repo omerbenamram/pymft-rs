@@ -14,6 +14,15 @@ class PyMftParser:
     A parser can be iterated any number of times, and `get_entry` reads one entry by
     number, including while an iteration is in progress. Threads can share a parser.
 
+    A file-like object is read at the parser's own position: the parser seeks before every
+    read of the object (entries read in order are fetched 64 KiB at a time, so up to that
+    much ahead of the entry asked for). So the object can be used elsewhere between the
+    parser's calls, by another parser too. That only holds on one thread. A seek and its
+    read are two calls on the object, so if another thread uses the object at the same time
+    (directly, or through a second parser over it), the two can interleave and a read can
+    return the bytes of another record. Threads can share one parser, whose lock covers
+    both calls; give each thread's parser its own file object.
+
     Iterating over entries or attributes raises `RuntimeError` or `OSError` for one that
     fails to parse, after stepping past it, so `next()` can go on. With `skip_errors=True`
     it is skipped instead, with a `RuntimeWarning` that `warnings` filters can count, log
@@ -77,6 +86,10 @@ class PyMftEntry:
     total_entry_size: int
     full_path: str
     file_size: int
+    """The size of the unnamed `$DATA` stream, or of a named one if there is none, also when
+    an extension record holds it. 0 without a `$DATA` attribute. The same as `FileSize` in
+    `entries_csv()`. Building the first entry whose `$ATTRIBUTE_LIST` is non-resident or
+    fails to parse reads the whole MFT once, to find such files' other records."""
     def attributes(self) -> PyMftAttributesIter: ...
 
 @final

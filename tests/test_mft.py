@@ -1,3 +1,4 @@
+import csv
 import datetime
 import io
 import itertools
@@ -461,3 +462,158 @@ def test_skip_errors_still_raises_read_errors(sample_mft: Path):
 
     with pytest.raises(OSError, match="bad sector"):
         list(parser.entries())
+
+
+def entry_summaries(entries):
+    return [(entry.entry_id, entry.sequence, entry.full_path) for entry in entries]
+
+
+def test_moving_the_file_object_does_not_move_the_parser(sample_mft: Path):
+    expected = entry_summaries(itertools.islice(PyMftParser(str(sample_mft)).entries(), 6))
+
+    with open(sample_mft, "rb") as m:
+        entries = PyMftParser(m).entries()
+        seen = []
+        for position in (0, 5 * ENTRY_SIZE, 123, 0, 2 * ENTRY_SIZE, 0):
+            seen.append(next(entries))
+            m.seek(position)
+            m.read(10)
+
+    assert entry_summaries(seen) == expected
+
+
+def test_two_parsers_can_share_a_file_object(sample_mft: Path):
+    expected = entry_summaries(itertools.islice(PyMftParser(str(sample_mft)).entries(), 50))
+
+    with open(sample_mft, "rb") as m:
+        first, second = PyMftParser(m), PyMftParser(m)
+        pairs = list(itertools.islice(zip(first.entries(), second.entries()), 50))
+        # Entry 30's record is far from where the iterators are.
+        assert first.get_entry(30).entry_id == second.get_entry(30).entry_id == 30
+
+    assert entry_summaries(a for a, _ in pairs) == expected
+    assert entry_summaries(b for _, b in pairs) == expected
+
+
+def test_moving_the_file_object_does_not_move_the_parser_between_fetches(sample_mft: Path):
+    # The file object is read 64 KiB at a time. 200 entries take four fetches, each with the
+    # object's position somewhere else.
+    expected = entry_summaries(itertools.islice(PyMftParser(str(sample_mft)).entries(), 200))
+
+    with open(sample_mft, "rb") as m:
+        entries = PyMftParser(m).entries()
+        seen = []
+        for number in range(200):
+            seen.append(next(entries))
+            m.seek((number * 7919) % (300 * ENTRY_SIZE))
+            m.read(10)
+        # Back in an earlier window, and on in a later one.
+        parser = PyMftParser(m)
+        m.seek(123)
+        assert [parser.get_entry(n).entry_id for n in (190, 3, 70, 500, 4)] == [190, 3, 70, 500, 4]
+
+    assert entry_summaries(seen) == expected
+
+
+def test_file_size_reads_extension_records(sample_mft: Path):
+    # The $DATA of entry 3498 is in an extension record, named by its $ATTRIBUTE_LIST.
+    entry = entry_by_id(sample_mft, 3498)
+    assert entry.full_path == "WINDOWS\\system32\\config\\system.LOG"
+    assert 0x80 not in [a.type_code for a in entry.attributes()]
+    assert entry.file_size == 1024
+
+
+def test_file_size_is_of_the_unnamed_stream(sample_mft: Path):
+    # The base record of entry 12938 only holds a named stream (26 bytes). The unnamed one, which
+    # is empty, is in an extension record.
+    entry = entry_by_id(sample_mft, 12938)
+    streams = [a.name for a in entry.attributes() if a.type_code == 0x80]
+    assert streams == ["Zone.Identifier"]
+    assert entry.file_size == 0
+
+
+def test_file_size_matches_csv(sample_mft: Path):
+    parser = PyMftParser(str(sample_mft))
+    rows = csv.DictReader(io.StringIO(b"".join(parser.entries_csv()).decode()))
+    sizes = {int(row["EntryId"]): int(row["FileSize"]) for row in rows}
+    assert sizes == {entry.entry_id: entry.file_size for entry in parser.entries()}
+
+
+def attribute_offset(data: bytes, entry_id: int, type_code: int) -> int:
+    """Where the first attribute of this type starts in an entry's record."""
+    record = entry_id * ENTRY_SIZE
+    offset = record + int.from_bytes(data[record + 0x14 : record + 0x16], "little")
+    while int.from_bytes(data[offset : offset + 4], "little") != type_code:
+        offset += int.from_bytes(data[offset + 4 : offset + 8], "little")
+    return offset
+
+
+class CountingReads(io.BytesIO):
+    reads = 0
+
+    def read(self, size=-1):
+        self.reads += 1
+        return super().read(size)
+
+
+def test_file_size_reads_no_more_than_it_needs(sample_mft: Path):
+    source = CountingReads(sample_mft.read_bytes())
+    parser = PyMftParser(source)
+
+    def reads_of(entry_id: int) -> int:
+        # Once before, to have the directories of its path cached.
+        parser.get_entry(entry_id)
+        before = source.reads
+        parser.get_entry(entry_id)
+        return source.reads - before
+
+    # No $ATTRIBUTE_LIST: the record itself.
+    assert parser.get_entry(209).file_size == 231
+    assert reads_of(209) == 1
+
+    # An $ATTRIBUTE_LIST that names a $DATA in another record: that record too.
+    assert parser.get_entry(3498).file_size == 1024
+    assert reads_of(3498) == 2
+
+
+def test_file_size_with_a_list_that_does_not_name_the_records(sample_mft: Path):
+    # An $ATTRIBUTE_LIST that fails to parse doesn't say where the file's other records are
+    # (nor does a non-resident one, which is outside the MFT). The parser finds them by reading
+    # every record, once.
+    data = bytearray(sample_mft.read_bytes())
+    for entry_id in (3498, 3499):
+        attribute_list = attribute_offset(data, entry_id, 0x20)
+        value = attribute_list + int.from_bytes(
+            data[attribute_list + 0x14 : attribute_list + 0x16], "little"
+        )
+        data[value + 4 : value + 6] = b"\0\0"  # The first entry's length.
+
+    source = CountingReads(bytes(data))
+    parser = PyMftParser(source)
+    # The whole MFT, 64 KiB at a time.
+    before = source.reads
+    assert parser.get_entry(3498).file_size == 1024
+    assert source.reads - before >= len(data) // (64 * ENTRY_SIZE)
+
+    # Not again: the entry's record, its parent directories' and its extension record.
+    before = source.reads
+    assert parser.get_entry(3499).file_size == 1024
+    assert parser.get_entry(3498).file_size == 1024
+    assert source.reads - before <= 10
+
+    rows = csv.DictReader(io.StringIO(b"".join(parser.entries_csv()).decode()))
+    sizes = {int(row["EntryId"]): int(row["FileSize"]) for row in rows}
+    assert sizes[3498] == sizes[3499] == 1024
+
+
+def test_file_size_leaves_out_data_that_fails_to_parse(sample_mft: Path):
+    # Entry 209 has one $DATA, resident. Its value now ends past the record, so the CSV has no
+    # $DATA to take a size from.
+    data = bytearray(sample_mft.read_bytes()[: 256 * ENTRY_SIZE])
+    offset = attribute_offset(data, 209, 0x80)
+    data[offset + 0x10 : offset + 0x14] = (5000).to_bytes(4, "little")
+
+    parser = PyMftParser(io.BytesIO(bytes(data)))
+    rows = csv.DictReader(io.StringIO(b"".join(parser.entries_csv()).decode()))
+    assert {int(row["EntryId"]): row["FileSize"] for row in rows}[209] == "0"
+    assert parser.get_entry(209).file_size == 0

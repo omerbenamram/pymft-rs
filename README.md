@@ -41,6 +41,10 @@ Run `pip install -e .`
 
 A parser can be iterated more than once, and `parser.get_entry(5)` reads a single entry by number.
 
+A parser over a file-like object seeks before every read of the object (entries read in order are fetched 64 KiB at a time, so up to that much ahead of the entry asked for), so on one thread the object can be used elsewhere between the parser's calls, by a second parser too.
+This does not make one file object safe to use from two threads at once: a seek and its read are two calls, so two parsers over one file object (or a parser and your own reads) running on different threads can interleave them, and a parser can then return the bytes of another record.
+Share one parser between the threads, or give each parser its own file object.
+
 Iterating raises the `RuntimeError` or `OSError` of an entry or attribute that fails to parse, after stepping past it.
 Pass `skip_errors=True` to skip them instead: each one skipped is reported as a `RuntimeWarning`, which
 [`warnings` filters](https://docs.python.org/3/library/warnings.html#the-warnings-filter) can count, log or turn back into errors.

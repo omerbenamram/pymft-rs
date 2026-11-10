@@ -276,11 +276,20 @@ def check_entry(entry, expected):
     assert entry.flags_value == sum(bit for name, bit in ENTRY_FLAGS.items() if name in flag_names)
     assert entry.is_allocated == ("ALLOCATED" in flag_names)
     assert entry.is_dir == ("INDEX_PRESENT" in flag_names)
-    first_data = next(
-        (a["header"] for a in expected["attributes"] if a["header"]["type_code"] == "DATA"), None
+    # The unnamed stream, when the base record holds its start. `test_mft.py` checks the sizes
+    # that come from extension records, which this JSON doesn't have, against `entries_csv()`.
+    unnamed_data = next(
+        (
+            a["header"]
+            for a in expected["attributes"]
+            if a["header"]["type_code"] == "DATA"
+            and a["header"]["name"] == ""
+            and a["header"]["residential_header"].get("vnc_first", 0) == 0
+        ),
+        None,
     )
-    if first_data is not None:
-        sizes = first_data["residential_header"]
+    if unnamed_data is not None:
+        sizes = unnamed_data["residential_header"]
         assert entry.file_size == sizes.get("data_size", sizes.get("file_size"))
 
     # Python returns every attribute header and parses the content when it's read, while the
