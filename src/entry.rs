@@ -48,6 +48,9 @@ pub struct PyMftEntry {
     pub total_entry_size: u32,
     #[pyo3(get)]
     pub full_path: String,
+    /// The size of the unnamed `$DATA` stream, or of a named one if there is none, wherever the
+    /// file's records hold it. 0 without a `$DATA` attribute. The same as `FileSize` in
+    /// `entries_csv()`.
     #[pyo3(get)]
     pub file_size: u64,
 }
@@ -89,10 +92,21 @@ impl PyMftEntry {
             .expect("unreachable")
             .map_or_else(|| "[UNKNOWN]".to_string(), |path| windows_path(&path));
 
-        let file_size = entry
-            .iter_attribute_records_matching(Some(vec![MftAttributeType::DATA]))
-            .find_map(Result::ok)
-            .map_or(0, |(header, _)| header.value_size());
+        // The size `entries_csv()` gives (`FlatMftEntryWithName`), from the headers alone. A file
+        // with an `$ATTRIBUTE_LIST` can have its `$DATA` in an extension record. The size is that
+        // of the unnamed stream, or of a named one if there is none. Records that continue a
+        // stream started elsewhere don't hold its size.
+        let extensions = parser.get_extension_entries(&entry);
+        let file_size = std::iter::once(&entry)
+            .chain(&extensions)
+            .flat_map(|record| {
+                record.iter_attribute_records_matching(Some(vec![MftAttributeType::DATA]))
+            })
+            .filter_map(Result::ok)
+            .map(|(header, _)| header)
+            .filter(|header| !header.is_continuation())
+            .min_by_key(|header| !header.name.is_empty())
+            .map_or(0, |header| header.value_size());
 
         Py::new(
             py,

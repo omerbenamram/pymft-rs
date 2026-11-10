@@ -13,6 +13,8 @@ and this project adheres to
 - A parser over a file-like object seeks before every read. Moving the object's position between
   calls (a `seek` or `read` of your own, or a second parser over the same object) made the parser
   return other records under the wrong `entry_id`.
+- `PyMftEntry.file_size` is the size `entries_csv()` gives. It was 0 for a file whose `$DATA` is in
+  an extension record, and the size of a named stream when one came before the unnamed stream.
 
 ## [0.10.1] - 2026-11-03
 

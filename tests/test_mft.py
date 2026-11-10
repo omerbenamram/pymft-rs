@@ -1,3 +1,4 @@
+import csv
 import datetime
 import io
 import itertools
@@ -492,3 +493,27 @@ def test_two_parsers_can_share_a_file_object(sample_mft: Path):
 
     assert entry_summaries(a for a, _ in pairs) == expected
     assert entry_summaries(b for _, b in pairs) == expected
+
+
+def test_file_size_reads_extension_records(sample_mft: Path):
+    # The $DATA of entry 3498 is in an extension record, named by its $ATTRIBUTE_LIST.
+    entry = entry_by_id(sample_mft, 3498)
+    assert entry.full_path == "WINDOWS\\system32\\config\\system.LOG"
+    assert 0x80 not in [a.type_code for a in entry.attributes()]
+    assert entry.file_size == 1024
+
+
+def test_file_size_is_of_the_unnamed_stream(sample_mft: Path):
+    # The base record of entry 12938 only holds a named stream (26 bytes). The unnamed one, which
+    # is empty, is in an extension record.
+    entry = entry_by_id(sample_mft, 12938)
+    streams = [a.name for a in entry.attributes() if a.type_code == 0x80]
+    assert streams == ["Zone.Identifier"]
+    assert entry.file_size == 0
+
+
+def test_file_size_matches_csv(sample_mft: Path):
+    parser = PyMftParser(str(sample_mft))
+    rows = csv.DictReader(io.StringIO(b"".join(parser.entries_csv()).decode()))
+    sizes = {int(row["EntryId"]): int(row["FileSize"]) for row in rows}
+    assert sizes == {entry.entry_id: entry.file_size for entry in parser.entries()}
