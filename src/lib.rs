@@ -15,7 +15,8 @@ use mft_rs::{MftEntry, MftParser};
 use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read, Seek};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use pyo3::exceptions;
 use pyo3::prelude::*;
@@ -75,8 +76,10 @@ pub enum Output {
 /// A parser can be iterated any number of times, and its entries read by number with
 /// `get_entry`, including while an iteration is in progress.
 ///
-/// A file-like object is read at the parser's own position: the parser seeks before every read,
-/// so the object can be used elsewhere between the parser's calls, by another parser too. That
+/// A file-like object is read at the parser's own position: the parser seeks before every read of
+/// the object (entries read in order are fetched 64 KiB at a time, so up to that much ahead of
+/// the entry asked for). So the object can be used elsewhere between the parser's calls, by
+/// another parser too. That
 /// only holds on one thread. A seek and its read are two calls on the object, so if another
 /// thread uses the object at the same time (directly, or through a second parser over it), the
 /// two can interleave and a read can return the bytes of another record. Threads can share one
@@ -220,10 +223,8 @@ impl PyMftParser {
                 inner: Arc::clone(&self.inner),
                 output_format,
                 skip_errors: self.skip_errors,
-                state: ReentryCheckedMutex::new(IteratorState {
-                    current_record: 0,
-                    csv_header_written: false,
-                }),
+                next_record: Mutex::new(0),
+                csv_header_written: AtomicBool::new(false),
             },
         )
     }
@@ -236,14 +237,12 @@ pub struct PyMftEntriesIterator {
     total_number_of_records: u64,
     output_format: Output,
     skip_errors: bool,
-    /// Locked before the parser, and for as long: entries leave in order, and the CSV header
-    /// goes with the first of them.
-    state: ReentryCheckedMutex<IteratorState>,
-}
-
-struct IteratorState {
-    current_record: u64,
-    csv_header_written: bool,
+    /// The number of the next record to read. Only locked with the parser locked, so it is never
+    /// waited for, and a thread that calls the iterator again from its file object's `read` is
+    /// stopped at the parser's lock. Held as long as the parser, so entries leave in order.
+    next_record: Mutex<u64>,
+    /// Whether a row was returned with the CSV header.
+    csv_header_written: AtomicBool,
 }
 
 #[pymethods]
@@ -257,20 +256,23 @@ impl PyMftEntriesIterator {
             // Unlocked while warning, as a `warnings` hook may use the parser or this iterator.
             let (step, warned) = deferring_warnings(py, || self.next_entry(py));
             let step = step?;
-            if let Err(error) = warned {
-                // The entry that warned isn't returned. If its row had the CSV header, the next
-                // row gets it.
-                if let Step::Yield {
-                    with_csv_header: true,
-                    ..
-                } = step
-                {
-                    self.state.lock(py, "the iterator")?.csv_header_written = false;
-                }
-                return Err(error);
-            }
+            // The entry that warned isn't returned.
+            warned?;
             match step {
-                Step::Yield { item, .. } => return Ok(item),
+                Step::End => return Ok(None),
+                Step::Yield(item) => return Ok(Some(item)),
+                Step::YieldCsv { row, header_length } => {
+                    // The header goes with the first row that is returned, which the first one
+                    // read may not be.
+                    let had_header =
+                        header_length > 0 && self.csv_header_written.swap(true, Ordering::Relaxed);
+                    let row = if had_header {
+                        &row[header_length..]
+                    } else {
+                        &row[..]
+                    };
+                    return Ok(Some(PyBytes::new(py, row).into_any().unbind()));
+                }
                 Step::Failed(id, error) => {
                     skip_or_raise(py, self.skip_errors, format_args!("entry {id}"), error)?
                 }
@@ -281,24 +283,27 @@ impl PyMftEntriesIterator {
 
 /// What reading the next entry came to, once the locks are released.
 enum Step {
-    Yield {
-        /// The entry in the iterator's format, or `None` at the end.
-        item: Option<Py<PyAny>>,
-        /// Whether `item` is the CSV row that starts with the header.
-        with_csv_header: bool,
-    },
+    /// There are no more entries.
+    End,
+    /// The entry, as an object or JSON.
+    Yield(Py<PyAny>),
+    /// The entry's CSV row, after a header of this length if none was returned when it was read.
+    YieldCsv { row: Vec<u8>, header_length: usize },
     /// The entry with this number failed to parse.
     Failed(u64, mft_rs::err::Error),
 }
 
 impl PyMftEntriesIterator {
     fn next_entry(&self, py: Python) -> PyResult<Step> {
-        let mut state = self.state.lock(py, "the iterator")?;
         let mut parser = lock_parser(&self.inner, py)?;
+        let mut next_record = self
+            .next_record
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
 
-        while state.current_record < self.total_number_of_records {
-            let id = state.current_record;
-            state.current_record += 1;
+        while *next_record < self.total_number_of_records {
+            let id = *next_record;
+            *next_record += 1;
 
             let entry = match parser.get_entry(id) {
                 Ok(entry) if &entry.header.signature == ZERO_HEADER => continue,
@@ -309,27 +314,19 @@ impl PyMftEntriesIterator {
                 }
                 Err(error) => return Ok(Step::Failed(id, error)),
             };
-            let with_csv_header =
-                matches!(self.output_format, Output::CSV) && !state.csv_header_written;
             return match self.output_format {
                 Output::Python => {
                     PyMftEntry::from_mft_entry(py, entry, &mut parser, self.skip_errors)
-                        .map(Py::into_any)
+                        .map(|entry| Step::Yield(entry.into_any()))
                 }
-                Output::JSON => Self::entry_to_json(entry, py),
+                Output::JSON => Self::entry_to_json(entry, py).map(Step::Yield),
                 Output::CSV => {
-                    Self::entry_to_csv(&mut state.csv_header_written, &mut parser, entry, py)
+                    let with_header = !self.csv_header_written.load(Ordering::Relaxed);
+                    Self::entry_to_csv(with_header, &mut parser, entry)
                 }
-            }
-            .map(|item| Step::Yield {
-                item: Some(item),
-                with_csv_header,
-            });
+            };
         }
-        Ok(Step::Yield {
-            item: None,
-            with_csv_header: false,
-        })
+        Ok(Step::End)
     }
 
     fn entry_to_json(entry: MftEntry, py: Python) -> PyResult<Py<PyAny>> {
@@ -340,24 +337,26 @@ impl PyMftEntriesIterator {
     }
 
     fn entry_to_csv(
-        csv_header_written: &mut bool,
+        with_header: bool,
         parser: &mut BoxedParser,
         entry: MftEntry,
-        py: Python,
-    ) -> PyResult<Py<PyAny>> {
+    ) -> PyResult<Step> {
         let mut writer = WriterBuilder::new()
-            .has_headers(!*csv_header_written)
+            .has_headers(with_header)
             .from_writer(Vec::new());
 
         writer
             .serialize(FlatMftEntryWithName::from_entry(&entry, parser))
             .map_err(|_| PyErr::new::<exceptions::PyRuntimeError, _>("CSV Serialization failed"))?;
-        let bytes = writer
+        let row = writer
             .into_inner()
             .map_err(|e| PyErr::new::<exceptions::PyRuntimeError, _>(e.to_string()))?;
-        // Only now, so the header goes with the next record if this one failed.
-        *csv_header_written = true;
-        Ok(PyBytes::new(py, &bytes).into_any().unbind())
+        // The header is the first line: column names have no line breaks.
+        let header_length = match row.iter().position(|&byte| byte == b'\n') {
+            Some(end) if with_header => end + 1,
+            _ => 0,
+        };
+        Ok(Step::YieldCsv { row, header_length })
     }
 }
 

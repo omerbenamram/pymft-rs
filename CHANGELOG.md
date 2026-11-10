@@ -23,15 +23,15 @@ and this project adheres to
 
 ### Fixed
 
-- A parser over a file-like object seeks before every read. Moving the object's position between
-  calls (a `seek` or `read` of your own, or a second parser over the same object) made the parser
-  return other records under the wrong `entry_id`. One file object is still not safe to use from
+- A parser over a file-like object seeks before every read of the object. Entries read in
+  order are fetched 64 KiB at a time. Moving the object's position between calls (a `seek` or `read` of your own, or a
+  second parser over the same object) made the parser return other records under the wrong
+  `entry_id`. One file object is still not safe to use from
   two threads at once, through two parsers or otherwise: a seek and its read are two calls.
 - `PyMftEntry.file_size` is the size `entries_csv()` gives. It was 0 for a file whose `$DATA` is in
   an extension record, and the size of a named stream when one came before the unnamed stream.
-  A file whose `$ATTRIBUTE_LIST` is non-resident or fails to parse is the exception: its size
-  still comes from the base record alone, as finding its other records takes reading the whole
-  MFT.
+  Building the first entry whose `$ATTRIBUTE_LIST` is non-resident or fails to parse reads the
+  whole MFT once, to find such files' other records.
 - Threads can share an iterator (`entries()`, `entries_json()`, `entries_csv()`, `attributes()`,
   `PyMftAttributeX20.entries()`): each item goes to one of them. A second thread calling `next()`
   got `RuntimeError: Already borrowed`.

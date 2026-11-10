@@ -21,12 +21,13 @@ class PyMftParser:
     number, including while an iteration is in progress. Threads can share a parser.
 
     A file-like object is read at the parser's own position: the parser seeks before every
-    read, so the object can be used elsewhere between the parser's calls, by another parser
-    too. That only holds on one thread. A seek and its read are two calls on the object, so
-    if another thread uses the object at the same time (directly, or through a second
-    parser over it), the two can interleave and a read can return the bytes of another
-    record. Threads can share one parser, whose lock covers both calls; give each thread's
-    parser its own file object.
+    read of the object (entries read in order are fetched 64 KiB at a time, so up to that
+    much ahead of the entry asked for). So the object can be used elsewhere between the
+    parser's calls, by another parser too. That only holds on one thread. A seek and its
+    read are two calls on the object, so if another thread uses the object at the same time
+    (directly, or through a second parser over it), the two can interleave and a read can
+    return the bytes of another record. Threads can share one parser, whose lock covers
+    both calls; give each thread's parser its own file object.
 
     Iterating over entries or attributes raises `RuntimeError` or `OSError` for one that
     fails to parse, after stepping past it, so `next()` can go on. With `skip_errors=True`
@@ -135,9 +136,9 @@ class PyMftEntry:
     def file_size(self) -> int:
         """The size of the unnamed `$DATA` stream, or of a named one if there is none, also
         when an extension record holds it. 0 without a `$DATA` attribute. The same as
-        `FileSize` in `entries_csv()`, except for a file whose `$ATTRIBUTE_LIST` is
-        non-resident or fails to parse: only the base record is looked at then, as finding
-        the file's other records takes reading the whole MFT."""
+        `FileSize` in `entries_csv()`. Building the first entry whose `$ATTRIBUTE_LIST` is
+        non-resident or fails to parse reads the whole MFT once, to find such files' other
+        records."""
     def attributes(self) -> PyMftAttributesIter: ...
 
 @final

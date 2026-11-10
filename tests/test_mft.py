@@ -502,6 +502,26 @@ def test_two_parsers_can_share_a_file_object(sample_mft: Path):
     assert entry_summaries(b for _, b in pairs) == expected
 
 
+def test_moving_the_file_object_does_not_move_the_parser_between_fetches(sample_mft: Path):
+    # The file object is read 64 KiB at a time. 200 entries take four fetches, each with the
+    # object's position somewhere else.
+    expected = entry_summaries(itertools.islice(PyMftParser(str(sample_mft)).entries(), 200))
+
+    with open(sample_mft, "rb") as m:
+        entries = PyMftParser(m).entries()
+        seen = []
+        for number in range(200):
+            seen.append(next(entries))
+            m.seek((number * 7919) % (300 * ENTRY_SIZE))
+            m.read(10)
+        # Back in an earlier window, and on in a later one.
+        parser = PyMftParser(m)
+        m.seek(123)
+        assert [parser.get_entry(n).entry_id for n in (190, 3, 70, 500, 4)] == [190, 3, 70, 500, 4]
+
+    assert entry_summaries(seen) == expected
+
+
 def test_file_size_reads_extension_records(sample_mft: Path):
     # The $DATA of entry 3498 is in an extension record, named by its $ATTRIBUTE_LIST.
     entry = entry_by_id(sample_mft, 3498)
@@ -563,27 +583,34 @@ def test_file_size_reads_no_more_than_it_needs(sample_mft: Path):
     assert reads_of(3498) == 2
 
 
-def test_file_size_does_not_scan_the_mft(sample_mft: Path):
+def test_file_size_with_a_list_that_does_not_name_the_records(sample_mft: Path):
     # An $ATTRIBUTE_LIST that fails to parse doesn't say where the file's other records are
-    # (nor does a non-resident one, which is outside the MFT). Finding them takes reading every
-    # record, which `entries_csv()` does once and `file_size` doesn't: it is the base record's.
+    # (nor does a non-resident one, which is outside the MFT). The parser finds them by reading
+    # every record, once.
     data = bytearray(sample_mft.read_bytes())
-    attribute_list = attribute_offset(data, 3498, 0x20)
-    value = attribute_list + int.from_bytes(
-        data[attribute_list + 0x14 : attribute_list + 0x16], "little"
-    )
-    data[value + 4 : value + 6] = b"\0\0"  # The first entry's length.
+    for entry_id in (3498, 3499):
+        attribute_list = attribute_offset(data, entry_id, 0x20)
+        value = attribute_list + int.from_bytes(
+            data[attribute_list + 0x14 : attribute_list + 0x16], "little"
+        )
+        data[value + 4 : value + 6] = b"\0\0"  # The first entry's length.
 
     source = CountingReads(bytes(data))
     parser = PyMftParser(source)
-    parser.get_entry(3498)
+    # The whole MFT, 64 KiB at a time.
     before = source.reads
-    entry = parser.get_entry(3498)
-    assert source.reads - before == 1
-    assert entry.file_size == 0
+    assert parser.get_entry(3498).file_size == 1024
+    assert source.reads - before >= len(data) // (64 * ENTRY_SIZE)
+
+    # Not again: the entry's record, its parent directories' and its extension record.
+    before = source.reads
+    assert parser.get_entry(3499).file_size == 1024
+    assert parser.get_entry(3498).file_size == 1024
+    assert source.reads - before <= 10
 
     rows = csv.DictReader(io.StringIO(b"".join(parser.entries_csv()).decode()))
-    assert {int(row["EntryId"]): row["FileSize"] for row in rows}[3498] == "1024"
+    sizes = {int(row["EntryId"]): int(row["FileSize"]) for row in rows}
+    assert sizes[3498] == sizes[3499] == 1024
 
 
 def test_file_size_leaves_out_data_that_fails_to_parse(sample_mft: Path):
@@ -625,8 +652,10 @@ def run_or_fail(function):
 
 @pytest.mark.parametrize("method", ["entries", "entries_json", "entries_csv"])
 def test_an_iterator_called_from_its_own_read_raises(sample_mft: Path, method: str):
-    source = CallsBack(sample_mft.read_bytes()[: 16 * ENTRY_SIZE])
+    # More than is fetched at a time (64 KiB), so iterating goes back to `read`.
+    source = CallsBack(sample_mft.read_bytes()[: 256 * ENTRY_SIZE])
     entries = getattr(PyMftParser(source), method)()
+    total = len(list(getattr(PyMftParser(source), method)()))
     next(entries)
 
     source.callback = lambda: next(entries)
@@ -634,22 +663,23 @@ def test_an_iterator_called_from_its_own_read_raises(sample_mft: Path, method: s
     run_or_fail(lambda: seen.extend(entries))
 
     assert isinstance(source.raised, RuntimeError)
-    assert "the iterator is already in use by this thread" in str(source.raised)
+    assert "the parser is already in use by this thread" in str(source.raised)
     # The call that was running went on.
-    assert len(seen) == 15
+    assert len(seen) == total - 1
 
 
 def test_a_parser_called_from_its_own_read_raises(sample_mft: Path):
-    source = CallsBack(sample_mft.read_bytes()[: 16 * ENTRY_SIZE])
+    source = CallsBack(sample_mft.read_bytes()[: 256 * ENTRY_SIZE])
     parser = PyMftParser(source)
 
     source.callback = lambda: parser.get_entry(0)
     entries = []
-    run_or_fail(lambda: entries.append(parser.get_entry(3)))
+    # Past what was fetched with the first entries.
+    run_or_fail(lambda: entries.append(parser.get_entry(200)))
 
     assert isinstance(source.raised, RuntimeError)
     assert "the parser is already in use by this thread" in str(source.raised)
-    assert entries[0].entry_id == 3
+    assert entries[0].entry_id == 200
 
 
 @pytest.mark.parametrize("as_path", [str, Path, os.fsencode], ids=["str", "Path", "bytes"])
