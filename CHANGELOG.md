@@ -14,6 +14,15 @@ and this project adheres to
 - `repr()` of a `PyMftParser`, `PyMftEntry` or `PyMftAttribute` says what it holds.
 - `PyMftEntry` objects are equal, and hash alike, when they have the same number, record bytes and
   path. Two reads of one entry were different dictionary keys.
+- `PyMftParser.entries_bodyfile()` yields Sleuth Kit bodyfile lines, as `mft_dump -o bodyfile`
+  and `fls -m` write them, for timelining with `mactime`. On the sample MFT the output is
+  byte-for-byte the same as `mft_dump`'s.
+- `PyMftParser.data_streams(entry_id)` returns a file's `$DATA` streams as `PyMftDataStream`s
+  (name, size, the record it is stored in, and the content of resident ones), including streams
+  stored in extension records, so resident files and alternate data streams such as
+  `Zone.Identifier` can be exported, as `mft_dump --extract-resident-streams` does. An extension
+  record has none when its base record lists it (they are the base record's), and its own when
+  the base record doesn't, as `mft_dump` decides.
 
 ### Changed
 

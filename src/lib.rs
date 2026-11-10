@@ -8,8 +8,10 @@ mod utils;
 
 pub(crate) mod err;
 pub use entry::PyMftEntry;
+use mft_rs::attribute::MftAttributeType;
+use mft_rs::attribute::header::{MftAttributeHeader, ResidentialHeader};
 use mft_rs::csv::FlatMftEntryWithName;
-use mft_rs::entry::ZERO_HEADER;
+use mft_rs::entry::{ZERO_HEADER, find_best_name_attribute_in};
 use mft_rs::{MftEntry, MftParser};
 
 use std::fs::File;
@@ -62,6 +64,7 @@ pub enum Output {
     Python,
     CSV,
     JSON,
+    Bodyfile,
 }
 
 #[pyclass(frozen, module = "mft")]
@@ -150,19 +153,7 @@ impl PyMftParser {
         py: Python,
         entry_id: &Bound<'_, PyAny>,
     ) -> PyResult<Option<Py<PyMftEntry>>> {
-        let count = self.entry_count;
-        let entry_id = match entry_id.extract::<u64>() {
-            Ok(id) if id < count => id,
-            // An integer, but negative or over 64 bits.
-            Err(error) if !error.is_instance_of::<exceptions::PyOverflowError>(py) => {
-                return Err(error);
-            }
-            _ => {
-                return Err(PyErr::new::<exceptions::PyIndexError, _>(format!(
-                    "entry {entry_id} is out of range ({count} entries)"
-                )));
-            }
-        };
+        let entry_id = self.entry_id_in_range(py, entry_id)?;
         with_deferred_warnings(py, || {
             let mut parser = lock_parser(&self.inner, py)?;
             let entry = parser.get_entry(entry_id).map_err(PyMftError)?;
@@ -197,6 +188,85 @@ impl PyMftParser {
         self.records_iterator(py, Output::CSV)
     }
 
+    /// entries_bodyfile(self, /)
+    /// --
+    ///
+    /// Returns an iterator that yields Sleuth Kit bodyfile lines (as `fls -m` writes them, for
+    /// `mactime`), one `str` per file holding all of its lines. Extension records and entries
+    /// without a `$FILE_NAME` are skipped.
+    fn entries_bodyfile(&self, py: Python) -> PyResult<Py<PyMftEntriesIterator>> {
+        self.records_iterator(py, Output::Bodyfile)
+    }
+
+    /// data_streams(self, entry_id)
+    /// --
+    ///
+    /// Returns the `$DATA` streams of the file with this entry number, including the ones
+    /// stored in its extension records: the unnamed stream first, then the named ones
+    /// (alternate data streams), in the order they are stored. A resident stream carries its
+    /// content in `data`. A non-resident one has `data=None`, since its content is on the volume
+    /// rather than in the MFT. An all-zero record has none, and neither has an extension record
+    /// that its base record lists (ask for the base record). Raises `IndexError` like
+    /// `get_entry`.
+    fn data_streams(
+        &self,
+        py: Python,
+        entry_id: &Bound<'_, PyAny>,
+    ) -> PyResult<Vec<Py<PyMftDataStream>>> {
+        let entry_id = self.entry_id_in_range(py, entry_id)?;
+        let records = with_deferred_warnings(py, || {
+            let mut parser = lock_parser(&self.inner, py)?;
+            let entry = parser.get_entry(entry_id).map_err(PyMftError)?;
+            // An all-zero record (which `get_entry` returns as `None`) has none, and the streams
+            // of an extension record its base record lists belong to the base record's file.
+            if &entry.header.signature == ZERO_HEADER || is_listed_by_its_base(&mut parser, &entry)
+            {
+                return Ok(Vec::new());
+            }
+            let extensions = parser.get_extension_entries(&entry);
+            Ok(std::iter::once(entry).chain(extensions).collect::<Vec<_>>())
+        })?;
+
+        let mut streams = Vec::new();
+        for record in &records {
+            let record_number = record.header.record_number;
+            for attribute in
+                record.iter_attribute_records_matching(Some(vec![MftAttributeType::DATA]))
+            {
+                // A malformed attribute header ends the walk: the attributes after it can't be
+                // found.
+                let ends_walk = attribute.is_err();
+                match attribute.and_then(|(header, attribute_record)| {
+                    DataStream::from_attribute(record_number, &header, attribute_record)
+                }) {
+                    Ok(stream) => streams.extend(stream),
+                    Err(error) => {
+                        let what = if ends_walk {
+                            "the rest of the attributes"
+                        } else {
+                            "a $DATA attribute"
+                        };
+                        skip_or_raise(
+                            py,
+                            self.skip_errors,
+                            format_args!("{what} of entry {record_number}"),
+                            error,
+                        )?;
+                        if ends_walk {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        // The unnamed stream first. The sort is stable, so the rest stay in storage order.
+        streams.sort_by_key(|stream| !stream.name.is_empty());
+        streams
+            .into_iter()
+            .map(|stream| Py::new(py, stream.into_py_stream(py)))
+            .collect()
+    }
+
     fn __iter__(slf: PyRef<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
         slf.entries(slf.py())
     }
@@ -211,6 +281,20 @@ impl PyMftParser {
 }
 
 impl PyMftParser {
+    /// The entry number `entry_id` stands for. Raises `IndexError` for any integer that is out of
+    /// range, and `TypeError` for anything else.
+    fn entry_id_in_range(&self, py: Python, entry_id: &Bound<'_, PyAny>) -> PyResult<u64> {
+        let count = self.entry_count;
+        match entry_id.extract::<u64>() {
+            Ok(id) if id < count => Ok(id),
+            // An integer, but negative or over 64 bits.
+            Err(error) if !error.is_instance_of::<exceptions::PyOverflowError>(py) => Err(error),
+            _ => Err(PyErr::new::<exceptions::PyIndexError, _>(format!(
+                "entry {entry_id} is out of range ({count} entries)"
+            ))),
+        }
+    }
+
     fn records_iterator(
         &self,
         py: Python,
@@ -261,6 +345,7 @@ impl PyMftEntriesIterator {
             match step {
                 Step::End => return Ok(None),
                 Step::Yield(item) => return Ok(Some(item)),
+                Step::Skip => {}
                 Step::YieldCsv { row, header_length } => {
                     // The header goes with the first row that is returned, which the first one
                     // read may not be.
@@ -285,8 +370,11 @@ impl PyMftEntriesIterator {
 enum Step {
     /// There are no more entries.
     End,
-    /// The entry, as an object or JSON.
+    /// The entry, as an object, JSON or bodyfile lines.
     Yield(Py<PyAny>),
+    /// The entry has no output (bodyfile lines), so the iterator goes on to the next one. Its
+    /// warnings are still sent, before the next entry is read.
+    Skip,
     /// The entry's CSV row, after a header of this length if none was returned when it was read.
     YieldCsv { row: Vec<u8>, header_length: usize },
     /// The entry with this number failed to parse.
@@ -324,9 +412,47 @@ impl PyMftEntriesIterator {
                     let with_header = !self.csv_header_written.load(Ordering::Relaxed);
                     Self::entry_to_csv(with_header, &mut parser, entry)
                 }
+                // An entry without bodyfile lines is skipped, after its warnings are sent: they
+                // are its own, not the next entry's.
+                Output::Bodyfile => Self::entry_to_bodyfile(&mut parser, &entry, py)
+                    .map(|lines| lines.map_or(Step::Skip, Step::Yield)),
             };
         }
         Ok(Step::End)
+    }
+
+    /// The entry's bodyfile lines, or `None` if it has none (an extension record, or an entry
+    /// without a `$FILE_NAME`).
+    fn entry_to_bodyfile(
+        parser: &mut BoxedParser,
+        entry: &MftEntry,
+        py: Python,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        // `write_entry` writes nothing for these either. Checked first, so their paths aren't
+        // resolved: an extension record can hold `$FILE_NAME`s of its base record's file.
+        if !entry.header.is_base_record() {
+            return Ok(None);
+        }
+        let extensions = parser.get_extension_entries(entry);
+        if find_best_name_attribute_in(entry, &extensions).is_none() {
+            return Ok(None);
+        }
+        // As `mft_dump -o bodyfile` does, a path that can't be resolved is left empty.
+        let full_path = parser
+            .get_full_path_for_entry(entry)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let mut lines = Vec::new();
+        mft_rs::bodyfile::write_entry(&mut lines, entry, &extensions, &full_path)?;
+        if lines.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(
+            PyString::new(py, &String::from_utf8_lossy(&lines))
+                .into_any()
+                .unbind(),
+        ))
     }
 
     fn entry_to_json(entry: MftEntry, py: Python) -> PyResult<Py<PyAny>> {
@@ -360,6 +486,108 @@ impl PyMftEntriesIterator {
     }
 }
 
+/// Whether `entry` is an extension record that its base record lists, as `mft_dump` decides
+/// which records' streams to export. A base record that was since reused for another file
+/// doesn't list it.
+fn is_listed_by_its_base(parser: &mut BoxedParser, entry: &MftEntry) -> bool {
+    if entry.header.is_base_record() {
+        return false;
+    }
+    let record_number = entry.header.record_number;
+    parser
+        .get_entry(entry.header.base_reference.entry)
+        .is_ok_and(|base| {
+            parser
+                .get_extension_entries(&base)
+                .iter()
+                .any(|extension| extension.header.record_number == record_number)
+        })
+}
+
+/// A `$DATA` stream read from a record, before it becomes a `PyMftDataStream`.
+struct DataStream<'a> {
+    name: String,
+    size: u64,
+    record_entry_id: u64,
+    attribute_id: u16,
+    data: Option<&'a [u8]>,
+}
+
+impl<'a> DataStream<'a> {
+    /// The stream a `$DATA` attribute of record `record_entry_id` starts, or `None` for a later
+    /// piece of a fragmented non-resident stream. Only the header is parsed, so a non-resident
+    /// stream whose data runs don't decode is still listed: its content isn't read here anyway.
+    fn from_attribute(
+        record_entry_id: u64,
+        header: &MftAttributeHeader,
+        attribute_record: &'a [u8],
+    ) -> mft_rs::err::Result<Option<Self>> {
+        if header.is_continuation() {
+            return Ok(None);
+        }
+        let data = match &header.residential_header {
+            ResidentialHeader::Resident(resident) => Some(resident.value(attribute_record)?),
+            ResidentialHeader::NonResident(_) => None,
+        };
+        Ok(Some(DataStream {
+            name: header.name.to_utf8_string(),
+            size: header.value_size(),
+            record_entry_id,
+            attribute_id: header.instance,
+            data,
+        }))
+    }
+
+    fn into_py_stream(self, py: Python) -> PyMftDataStream {
+        PyMftDataStream {
+            name: self.name,
+            size: self.size,
+            record_entry_id: self.record_entry_id,
+            attribute_id: self.attribute_id,
+            data: self.data.map(|data| PyBytes::new(py, data).unbind()),
+        }
+    }
+}
+
+/// A `$DATA` stream of a file, from `PyMftParser.data_streams`.
+#[pyclass(frozen, module = "mft")]
+pub struct PyMftDataStream {
+    /// The stream's name, empty for the unnamed (main) stream.
+    #[pyo3(get)]
+    name: String,
+    /// The stream's size in bytes.
+    #[pyo3(get)]
+    size: u64,
+    /// The record the stream is stored in: the file's entry, or one of its extension records.
+    #[pyo3(get)]
+    record_entry_id: u64,
+    /// The attribute's instance number in that record.
+    #[pyo3(get)]
+    attribute_id: u16,
+    /// The content of a resident stream, `None` for a non-resident one.
+    #[pyo3(get)]
+    data: Option<Py<PyBytes>>,
+}
+
+#[pymethods]
+impl PyMftDataStream {
+    /// Whether the content is stored in the MFT record.
+    #[getter]
+    fn is_resident(&self) -> bool {
+        self.data.is_some()
+    }
+
+    fn __repr__(&self, py: Python) -> PyResult<String> {
+        Ok(format!(
+            "<PyMftDataStream name={} size={} record_entry_id={} is_resident={}>",
+            PyString::new(py, &self.name).repr()?,
+            self.size,
+            self.record_entry_id,
+            if self.is_resident() { "True" } else { "False" }
+        ))
+    }
+}
+
 // Don't use double quotes ("") inside this docstring, this will crash pyo3.
 /// Parses an mft file.
 #[pymodule(gil_used = false)]
@@ -369,6 +597,7 @@ fn mft(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
 
     m.add_class::<PyMftParser>()?;
+    m.add_class::<PyMftDataStream>()?;
 
     // Entry
     m.add_class::<PyMftEntriesIterator>()?;
