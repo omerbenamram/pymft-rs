@@ -59,6 +59,9 @@ class PyMftEntriesIterator:
 
     Each iterator has its own position. Threads can share an iterator: each entry goes to
     one of them.
+
+    A file-like object's `read` and `seek` must not call back into the parser or iterator
+    that is reading it: that call raises `RuntimeError`.
     """
 
     def __iter__(self) -> Self: ...

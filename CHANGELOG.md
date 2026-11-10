@@ -22,6 +22,8 @@ and this project adheres to
 - Threads can share an iterator (`entries()`, `entries_json()`, `entries_csv()`, `attributes()`,
   `PyMftAttributeX20.entries()`): each item goes to one of them. A second thread calling `next()`
   got `RuntimeError: Already borrowed`.
+- A file-like object whose `read` or `seek` calls back into the parser or iterator that is reading
+  it gets a `RuntimeError`. The parser waited for itself forever.
 
 ## [0.10.1] - 2026-11-03
 
