@@ -84,14 +84,14 @@ Use plain words and full sentences: short ones, one idea each, in the active voi
 - `cargo clippy --locked --all-targets -- -D warnings`
 - `make build-dev`, then `.venv/bin/python -m pytest -q`. This is one debug build; `make test` does the same with a release build, which CI already tests.
 - When you change the Python API or `mft.pyi`: `make stubtest`, which checks `mft.pyi` against the built module. Update `mft.pyi` in the same pull request as an API change.
-- When you change shared state, locking or module start-up: `VIRTUAL_ENV=$PWD/.venv-ft make test PYTHON=3.14t VENV=.venv-ft`. It runs the one test in `tests/test_threading.py` that is skipped on an interpreter with the GIL.
+- When you change shared state, locking or module start-up: `make test PYTHON=3.14t VENV=.venv-ft`. It runs the one test in `tests/test_threading.py` that is skipped on an interpreter with the GIL.
 - When you change `CHANGELOG.md` or `version` in `Cargo.toml`: `scripts/release-notes.sh <version in Cargo.toml>`. CI fails a pull request when the current version has no notes in `CHANGELOG.md`.
 
 ### Code rules
 
 - The Python API is the contract. Mark a breaking change with **Breaking:** in `CHANGELOG.md`, and say what a caller must change.
 - The bindings build on the published `mft` crate. A change that needs unreleased `mft` code waits for an `mft` release.
-- CI builds with `--locked`, and the `make` targets do not, so a local build can change `Cargo.lock` without saying so. Commit `Cargo.lock` whenever the dependencies change. This crate is itself named `mft`, so `cargo update -p mft` is ambiguous. Name the registry package: `cargo update -p 'registry+https://github.com/rust-lang/crates.io-index#mft@<old version>'`.
+- CI and the `make` targets build with `--locked`, so a build fails when `Cargo.lock` does not fit `Cargo.toml`. When you change the dependencies or `version`, run `cargo check`, which changes only what no longer fits in `Cargo.lock`, and commit the file. This crate is itself named `mft`, so `cargo update -p mft` is ambiguous. Name the registry package: `cargo update -p 'registry+https://github.com/rust-lang/crates.io-index#mft@<old version>'`.
 - The module runs on free-threaded Python. Keep it safe without the GIL, and keep `tests/test_threading.py` passing.
 - When `MFT_EXPECT_PYTHON` is set, as it is in CI, `build.rs` fails a build whose free-threaded flag does not match it. `scripts/check_wheel_abi.py` checks the tags of the built wheel. Keep both when you change the build.
 - Timestamps use `jiff`. Do not add `chrono`: Omer prefers `jiff`.
