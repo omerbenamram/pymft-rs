@@ -184,12 +184,14 @@ pub fn deferring_warnings<T>(
         let result = f();
         (result, DEFERRED_WARNINGS.take().unwrap_or_default())
     };
-    let category = py.get_type::<PyUserWarning>();
     let mut warned = Ok(());
-    for message in messages {
-        let sent = warn(py, &category, message);
-        if warned.is_ok() {
-            warned = sent;
+    if !messages.is_empty() {
+        let category = py.get_type::<PyUserWarning>();
+        for message in messages {
+            let sent = warn(py, &category, message);
+            if warned.is_ok() {
+                warned = sent;
+            }
         }
     }
     (result, warned)
