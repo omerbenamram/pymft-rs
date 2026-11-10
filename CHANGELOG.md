@@ -25,19 +25,25 @@ and this project adheres to
 
 - A parser over a file-like object seeks before every read. Moving the object's position between
   calls (a `seek` or `read` of your own, or a second parser over the same object) made the parser
-  return other records under the wrong `entry_id`.
+  return other records under the wrong `entry_id`. One file object is still not safe to use from
+  two threads at once, through two parsers or otherwise: a seek and its read are two calls.
 - `PyMftEntry.file_size` is the size `entries_csv()` gives. It was 0 for a file whose `$DATA` is in
   an extension record, and the size of a named stream when one came before the unnamed stream.
+  A file whose `$ATTRIBUTE_LIST` is non-resident or fails to parse is the exception: its size
+  still comes from the base record alone, as finding its other records takes reading the whole
+  MFT.
 - Threads can share an iterator (`entries()`, `entries_json()`, `entries_csv()`, `attributes()`,
   `PyMftAttributeX20.entries()`): each item goes to one of them. A second thread calling `next()`
   got `RuntimeError: Already borrowed`.
+- A file-like object whose `read` or `seek` calls back into the parser or iterator that is reading
+  it gets a `RuntimeError`. The parser waited for itself forever.
 - `PyMftParser` takes `os.PathLike` (`pathlib.Path`) and `bytes` paths, and paths that aren't
   UTF-8. It raises a `TypeError` that says what it takes for anything else, and for a file opened
   in text mode, which gave `OSError: buffer size must be at least 4 bytes`.
 - The `UserWarning`s for what the parser notices but reads anyway (a record whose fixup values
   don't match) are sent once the parser is unlocked. A `warnings` hook that used the parser never
   returned. A filter that turns them into errors (`-W error`) now makes the call raise, where the
-  error was dropped.
+  error was dropped. The entry that warned is then not returned.
 - `get_entry()` raises `IndexError` for any integer that is out of range, as documented. One that
   doesn't fit in 64 bits raised `OverflowError`.
 - The stubs declare the classes' attributes as read-only properties, which they are.

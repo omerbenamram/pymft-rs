@@ -41,8 +41,13 @@ Run `pip install -e .`
 ## Usage
 
 `PyMftParser` takes a path (`str`, `bytes` or `os.PathLike`, such as `pathlib.Path`) or a file-like object opened in binary mode.
+An object with `read` and `seek` is read as a file object, also when it is an `os.PathLike`.
 
 A parser can be iterated more than once, and `parser.get_entry(5)` reads a single entry by number.
+
+A parser over a file-like object seeks before every read, so on one thread the object can be used elsewhere between the parser's calls, by a second parser too.
+This does not make one file object safe to use from two threads at once: a seek and its read are two calls, so two parsers over one file object (or a parser and your own reads) running on different threads can interleave them, and a parser can then return the bytes of another record.
+Share one parser between the threads, or give each parser its own file object.
 
 `entry.full_path` is `[UNKNOWN]` for a record without a `$FILE_NAME` attribute, where `entries_csv()` has an empty `FullPath`.
 
@@ -52,7 +57,7 @@ Pass `skip_errors=True` to skip them instead: each one skipped is reported as a 
 Failing to read the file raises either way, and so does reading an `attribute_content` that fails to parse.
 
 What the parser notices but reads anyway, such as a record whose fixup values don't match, is reported as a `UserWarning`.
-With a filter that turns it into an error (`-W error`), the call that read the record raises it.
+With a filter that turns it into an error (`-W error`), the call that read the record raises it and the entry is not returned: `get_entry` raises every time, and an iterator steps past the entry, as it does for one that fails to parse.
 
 ```python
 from mft import PyMftParser, PyMftAttributeX10, PyMftAttributeX30

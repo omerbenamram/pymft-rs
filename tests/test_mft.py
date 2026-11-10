@@ -526,6 +526,132 @@ def test_file_size_matches_csv(sample_mft: Path):
     assert sizes == {entry.entry_id: entry.file_size for entry in parser.entries()}
 
 
+def attribute_offset(data: bytes, entry_id: int, type_code: int) -> int:
+    """Where the first attribute of this type starts in an entry's record."""
+    record = entry_id * ENTRY_SIZE
+    offset = record + int.from_bytes(data[record + 0x14 : record + 0x16], "little")
+    while int.from_bytes(data[offset : offset + 4], "little") != type_code:
+        offset += int.from_bytes(data[offset + 4 : offset + 8], "little")
+    return offset
+
+
+class CountingReads(io.BytesIO):
+    reads = 0
+
+    def read(self, size=-1):
+        self.reads += 1
+        return super().read(size)
+
+
+def test_file_size_reads_no_more_than_it_needs(sample_mft: Path):
+    source = CountingReads(sample_mft.read_bytes())
+    parser = PyMftParser(source)
+
+    def reads_of(entry_id: int) -> int:
+        # Once before, to have the directories of its path cached.
+        parser.get_entry(entry_id)
+        before = source.reads
+        parser.get_entry(entry_id)
+        return source.reads - before
+
+    # No $ATTRIBUTE_LIST: the record itself.
+    assert parser.get_entry(209).file_size == 231
+    assert reads_of(209) == 1
+
+    # An $ATTRIBUTE_LIST that names a $DATA in another record: that record too.
+    assert parser.get_entry(3498).file_size == 1024
+    assert reads_of(3498) == 2
+
+
+def test_file_size_does_not_scan_the_mft(sample_mft: Path):
+    # An $ATTRIBUTE_LIST that fails to parse doesn't say where the file's other records are
+    # (nor does a non-resident one, which is outside the MFT). Finding them takes reading every
+    # record, which `entries_csv()` does once and `file_size` doesn't: it is the base record's.
+    data = bytearray(sample_mft.read_bytes())
+    attribute_list = attribute_offset(data, 3498, 0x20)
+    value = attribute_list + int.from_bytes(
+        data[attribute_list + 0x14 : attribute_list + 0x16], "little"
+    )
+    data[value + 4 : value + 6] = b"\0\0"  # The first entry's length.
+
+    source = CountingReads(bytes(data))
+    parser = PyMftParser(source)
+    parser.get_entry(3498)
+    before = source.reads
+    entry = parser.get_entry(3498)
+    assert source.reads - before == 1
+    assert entry.file_size == 0
+
+    rows = csv.DictReader(io.StringIO(b"".join(parser.entries_csv()).decode()))
+    assert {int(row["EntryId"]): row["FileSize"] for row in rows}[3498] == "1024"
+
+
+def test_file_size_leaves_out_data_that_fails_to_parse(sample_mft: Path):
+    # Entry 209 has one $DATA, resident. Its value now ends past the record, so the CSV has no
+    # $DATA to take a size from.
+    data = bytearray(sample_mft.read_bytes()[: 256 * ENTRY_SIZE])
+    offset = attribute_offset(data, 209, 0x80)
+    data[offset + 0x10 : offset + 0x14] = (5000).to_bytes(4, "little")
+
+    parser = PyMftParser(io.BytesIO(bytes(data)))
+    rows = csv.DictReader(io.StringIO(b"".join(parser.entries_csv()).decode()))
+    assert {int(row["EntryId"]): row["FileSize"] for row in rows}[209] == "0"
+    assert parser.get_entry(209).file_size == 0
+
+
+class CallsBack(io.BytesIO):
+    """A file object whose next `read` calls `callback` first, keeping what that raises."""
+
+    callback = None
+    raised = None
+
+    def read(self, size=-1):
+        callback, self.callback = self.callback, None
+        if callback is not None:
+            try:
+                callback()
+            except Exception as error:
+                self.raised = error
+        return super().read(size)
+
+
+def run_or_fail(function):
+    """Runs on a thread, so that a call that waits for itself fails the test instead."""
+    thread = threading.Thread(target=function, daemon=True)
+    thread.start()
+    thread.join(timeout=30)
+    assert not thread.is_alive(), "still waiting"
+
+
+@pytest.mark.parametrize("method", ["entries", "entries_json", "entries_csv"])
+def test_an_iterator_called_from_its_own_read_raises(sample_mft: Path, method: str):
+    source = CallsBack(sample_mft.read_bytes()[: 16 * ENTRY_SIZE])
+    entries = getattr(PyMftParser(source), method)()
+    next(entries)
+
+    source.callback = lambda: next(entries)
+    seen = []
+    run_or_fail(lambda: seen.extend(entries))
+
+    assert isinstance(source.raised, RuntimeError)
+    assert "the iterator is already in use by this thread" in str(source.raised)
+    # The call that was running went on.
+    assert len(seen) == 15
+
+
+def test_a_parser_called_from_its_own_read_raises(sample_mft: Path):
+    source = CallsBack(sample_mft.read_bytes()[: 16 * ENTRY_SIZE])
+    parser = PyMftParser(source)
+
+    source.callback = lambda: parser.get_entry(0)
+    entries = []
+    run_or_fail(lambda: entries.append(parser.get_entry(3)))
+
+    assert isinstance(source.raised, RuntimeError)
+    assert "the parser is already in use by this thread" in str(source.raised)
+    assert entries[0].entry_id == 3
+
+
 @pytest.mark.parametrize("as_path", [str, Path, os.fsencode], ids=["str", "Path", "bytes"])
 def test_path_types(sample_mft: Path, as_path):
     assert PyMftParser(as_path(sample_mft)).get_entry(0).full_path == "$MFT"
@@ -567,6 +693,30 @@ def test_text_file_is_a_type_error(sample_mft: Path):
 def test_other_types_are_a_type_error(value):
     with pytest.raises(TypeError, match="expected a path .* not " + type(value).__name__):
         PyMftParser(value)
+
+
+def test_a_file_object_with_a_path_is_read_as_a_file_object(sample_mft: Path, tmp_path: Path):
+    # Like fsspec's `LocalFileOpener`, or a wrapper that decompresses: the object's `read` gives
+    # the content, which isn't what is on disk under its name.
+    class Opened(io.BytesIO):
+        def __fspath__(self):
+            return str(tmp_path / "compressed.gz")
+
+    (tmp_path / "compressed.gz").write_bytes(b"not an MFT")
+    parser = PyMftParser(Opened(sample_mft.read_bytes()[: 16 * ENTRY_SIZE]))
+    assert parser.number_of_entries() == 16
+    assert parser.get_entry(0).full_path == "$MFT"
+
+
+def test_a_path_like_with_only_read_is_a_path(sample_mft: Path):
+    class Located:
+        def __fspath__(self):
+            return str(sample_mft)
+
+        def read(self):
+            raise AssertionError("not a file object: it has no seek")
+
+    assert PyMftParser(Located()).get_entry(0).full_path == "$MFT"
 
 
 @pytest.fixture
@@ -627,6 +777,53 @@ def test_a_warnings_hook_can_use_the_parser(mft_with_a_bad_fixup: io.BytesIO, mo
     assert not thread.is_alive(), "the warnings hook is waiting for the parser"
     # Once for `get_entry(3)`, and once when the iterator reads entry 3.
     assert seen == [("$MFT", 0), ("$MFT", 4)]
+
+
+def test_every_logged_warning_is_sent_when_one_is_an_error(sample_mft: Path):
+    # Both sectors of entry 3 fail their fixup check, which logs a warning each.
+    data = bytearray(sample_mft.read_bytes()[: 16 * ENTRY_SIZE])
+    data[3 * ENTRY_SIZE + 510] ^= 0xFF
+    data[3 * ENTRY_SIZE + 1022] ^= 0xFF
+    parser = PyMftParser(io.BytesIO(bytes(data)))
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        parser.get_entry(3)
+    assert ["stride_number: 0" in str(w.message) for w in caught] == [True, False]
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        warnings.filterwarnings("error", message=".*stride_number: 0")
+        with pytest.raises(UserWarning, match="stride_number: 0"):
+            parser.get_entry(3)
+    # The second one was still sent.
+    assert ["stride_number: 1" in str(w.message) for w in caught] == [True]
+
+
+@pytest.mark.filterwarnings("error::UserWarning")
+@pytest.mark.parametrize("bad_entry", [0, 1])
+def test_csv_header_survives_a_row_lost_to_a_warning(sample_mft: Path, bad_entry: int):
+    data = sample_mft.read_bytes()[: 16 * ENTRY_SIZE]
+    expected = list(PyMftParser(io.BytesIO(data)).entries_csv())
+    header, first_row = expected[0].splitlines(keepends=True)
+    expected[0] = first_row
+
+    data = bytearray(data)
+    data[bad_entry * ENTRY_SIZE + 510] ^= 0xFF
+    rows = PyMftParser(io.BytesIO(bytes(data))).entries_csv()
+    seen = []
+    for entry_id in range(16):
+        if entry_id == bad_entry:
+            with pytest.raises(UserWarning, match="fixup bytes are not equal"):
+                next(rows)
+        else:
+            seen.append(next(rows))
+
+    # The row of the entry that warned isn't returned. The header comes once, with the first row
+    # that is.
+    del expected[bad_entry]
+    expected[0] = header + expected[0]
+    assert seen == expected
 
 
 @pytest.mark.parametrize("entry_id", [2**63, 2**64, -(2**63) - 1])

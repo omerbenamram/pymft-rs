@@ -8,7 +8,7 @@ use pyo3::types::PyString;
 use crate::attribute::PyMftAttribute;
 use crate::err::skip_or_raise;
 use crate::utils::windows_path;
-use mft_rs::attribute::MftAttributeType;
+use mft_rs::attribute::{MftAttributeContent, MftAttributeType};
 use mft_rs::{MftEntry, MftParser};
 
 #[pyclass(module = "mft")]
@@ -54,9 +54,11 @@ pub struct PyMftEntry {
     /// gone, `[Unknown]` when the parent's record isn't a directory.
     #[pyo3(get)]
     pub full_path: String,
-    /// The size of the unnamed `$DATA` stream, or of a named one if there is none, wherever the
-    /// file's records hold it. 0 without a `$DATA` attribute. The same as `FileSize` in
-    /// `entries_csv()`.
+    /// The size of the unnamed `$DATA` stream, or of a named one if there is none, also when an
+    /// extension record holds it. 0 without a `$DATA` attribute. The same as `FileSize` in
+    /// `entries_csv()`, except for a file whose `$ATTRIBUTE_LIST` is non-resident or fails to
+    /// parse: only the base record is looked at then, as finding the file's other records takes
+    /// reading the whole MFT.
     #[pyo3(get)]
     pub file_size: u64,
 }
@@ -121,21 +123,7 @@ impl PyMftEntry {
             .expect("unreachable")
             .map_or_else(|| "[UNKNOWN]".to_string(), |path| windows_path(&path));
 
-        // The size `entries_csv()` gives (`FlatMftEntryWithName`), from the headers alone. A file
-        // with an `$ATTRIBUTE_LIST` can have its `$DATA` in an extension record. The size is that
-        // of the unnamed stream, or of a named one if there is none. Records that continue a
-        // stream started elsewhere don't hold its size.
-        let extensions = parser.get_extension_entries(&entry);
-        let file_size = std::iter::once(&entry)
-            .chain(&extensions)
-            .flat_map(|record| {
-                record.iter_attribute_records_matching(Some(vec![MftAttributeType::DATA]))
-            })
-            .filter_map(Result::ok)
-            .map(|(header, _)| header)
-            .filter(|header| !header.is_continuation())
-            .min_by_key(|header| !header.name.is_empty())
-            .map_or(0, |header| header.value_size());
+        let file_size = file_size(&entry, parser);
 
         Py::new(
             py,
@@ -199,4 +187,62 @@ impl PyMftAttributesIter {
             }
         }
     }
+}
+
+/// A file's size as `entries_csv()` gives it (`FlatMftEntryWithName`): that of its unnamed `$DATA`
+/// stream, or of a named one if there is none, among the `$DATA` attributes that parse. Records
+/// that continue a stream started elsewhere don't hold its size.
+///
+/// A file with an `$ATTRIBUTE_LIST` can have its `$DATA` in an extension record. Those are only
+/// read when the list names a `$DATA` in another record and the base record doesn't already
+/// decide the size. A list that is non-resident (so outside the MFT) or fails to parse doesn't
+/// name the records: the CSV then looks for them in the whole MFT, which is too much to do for
+/// one number of one entry, so the size is the base record's.
+fn file_size(entry: &MftEntry, parser: &mut MftParser<impl ReadSeek>) -> u64 {
+    /// The stream to take the size from, as (is named, size).
+    fn stream<'a>(records: impl Iterator<Item = &'a MftEntry>) -> Option<(bool, u64)> {
+        records
+            .flat_map(|record| {
+                record.iter_attribute_records_matching(Some(vec![MftAttributeType::DATA]))
+            })
+            .filter_map(Result::ok)
+            .filter(|(header, record)| {
+                !header.is_continuation()
+                    && MftAttributeContent::from_record(record, header).is_ok()
+            })
+            .map(|(header, _)| (!header.name.is_empty(), header.value_size()))
+            // The first unnamed one, else the first.
+            .min_by_key(|(named, _)| *named)
+    }
+
+    let in_base = stream(std::iter::once(entry));
+    if let Some((false, size)) = in_base {
+        return size;
+    }
+    let size_in_base = in_base.map_or(0, |(_, size)| size);
+
+    let mut names_data_elsewhere = false;
+    for (header, record) in entry
+        .iter_attribute_records_matching(Some(vec![MftAttributeType::AttributeList]))
+        .filter_map(Result::ok)
+    {
+        let content = MftAttributeContent::from_record(record, &header).ok();
+        let Some(list) = content
+            .as_ref()
+            .and_then(MftAttributeContent::as_attribute_list)
+        else {
+            return size_in_base;
+        };
+        names_data_elsewhere |= list.entries.iter().any(|listed| {
+            listed.attribute_type == MftAttributeType::DATA as u32
+                && listed.segment_reference.entry != entry.header.record_number
+        });
+    }
+    if !names_data_elsewhere {
+        return size_in_base;
+    }
+
+    // Every list is resident and parsed, so this reads the records they name and no others.
+    let extensions = parser.get_extension_entries(entry);
+    stream(std::iter::once(entry).chain(&extensions)).map_or(0, |(_, size)| size)
 }

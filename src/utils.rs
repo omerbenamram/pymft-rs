@@ -67,6 +67,21 @@ impl FileOrFileLike {
     pub fn from_pyobject(path_or_file_like: &Bound<'_, PyAny>) -> PyResult<FileOrFileLike> {
         let py = path_or_file_like.py();
 
+        // A file object first: one can have a path too (fsspec's `LocalFileOpener`, a wrapper
+        // that decompresses), and what its `read` gives isn't what is on disk under that name.
+        // `read` and `seek` are all that is used, so `PyFileLikeObject` has nothing more to check.
+        if path_or_file_like.hasattr("read")? && path_or_file_like.hasattr("seek")? {
+            // A text file would be read as its characters encoded back to UTF-8.
+            let text_io = py.import("io")?.getattr("TextIOBase")?;
+            if path_or_file_like.is_instance(&text_io)? {
+                return Err(PyTypeError::new_err(
+                    "expected a file opened in binary mode ('rb'), not a text file",
+                ));
+            }
+            return PyFileLikeObject::py_new(path_or_file_like.clone())
+                .map(|file| FileOrFileLike::FileLike(PinnedFileLike::new(file)));
+        }
+
         // A path: `str`, `bytes` or `os.PathLike`. `os.fsdecode` takes the three and decodes
         // bytes the way Python does file names, so one that isn't UTF-8 is kept as it is.
         if path_or_file_like.is_instance_of::<PyString>()
@@ -79,24 +94,11 @@ impl FileOrFileLike {
             return Ok(FileOrFileLike::File(path.extract()?));
         }
 
-        // A text file would be read as its characters encoded back to UTF-8.
-        let text_io = py.import("io")?.getattr("TextIOBase")?;
-        if path_or_file_like.is_instance(&text_io)? {
-            return Err(PyTypeError::new_err(
-                "expected a file opened in binary mode ('rb'), not a text file",
-            ));
-        }
-        if !path_or_file_like.hasattr("read")? || !path_or_file_like.hasattr("seek")? {
-            return Err(PyTypeError::new_err(format!(
-                "expected a path (str, bytes or os.PathLike) or a binary file-like object with \
-                 read() and seek(), not {}",
-                path_or_file_like.get_type().name()?
-            )));
-        }
-
-        // We only need read + seek (no write, no fileno).
-        PyFileLikeObject::py_with_requirements(path_or_file_like.clone(), true, false, true, false)
-            .map(|file| FileOrFileLike::FileLike(PinnedFileLike::new(file)))
+        Err(PyTypeError::new_err(format!(
+            "expected a path (str, bytes or os.PathLike) or a binary file-like object with \
+             read() and seek(), not {}",
+            path_or_file_like.get_type().name()?
+        )))
     }
 }
 
@@ -115,10 +117,15 @@ impl Drop for DeferredWarningsScope {
 }
 
 /// Runs `f`, which locks the parser, and only then sends the warnings the `mft` crate logged in
-/// it to `warnings.warn`, which runs Python code: a `warnings` hook that uses the parser would
-/// wait for the lock forever. If a `warnings` filter turns one into an error, it is raised in
-/// place of the value of `f`. An error of `f` comes first.
-pub fn with_deferred_warnings<T>(py: Python<'_>, f: impl FnOnce() -> PyResult<T>) -> PyResult<T> {
+/// it to `warnings.warn`, which runs Python code: a `warnings` hook must be able to use the
+/// parser. Every warning is sent, whatever `f` and the ones before it came to.
+///
+/// Returns the result of `f`, and the error of the first warning that a `warnings` filter turned
+/// into one.
+pub fn deferring_warnings<T>(
+    py: Python<'_>,
+    f: impl FnOnce() -> PyResult<T>,
+) -> (PyResult<T>, PyResult<()>) {
     let (result, messages) = {
         // Calls nest when a file-like object's `read` uses another parser.
         let _scope = DeferredWarningsScope(DEFERRED_WARNINGS.replace(Some(Vec::new())));
@@ -126,23 +133,23 @@ pub fn with_deferred_warnings<T>(py: Python<'_>, f: impl FnOnce() -> PyResult<T>
         (result, DEFERRED_WARNINGS.take().unwrap_or_default())
     };
     let category = py.get_type::<PyUserWarning>();
-    match result {
-        Ok(value) => {
-            for message in messages {
-                warn(py, &category, message)?;
-            }
-            Ok(value)
-        }
-        Err(error) => {
-            // Still shown, but only the error of `f` is raised.
-            for message in messages {
-                if warn(py, &category, message).is_err() {
-                    break;
-                }
-            }
-            Err(error)
+    let mut warned = Ok(());
+    for message in messages {
+        let sent = warn(py, &category, message);
+        if warned.is_ok() {
+            warned = sent;
         }
     }
+    (result, warned)
+}
+
+/// [`deferring_warnings`], raising the error of `f`, or else of a warning in place of the value
+/// of `f`.
+pub fn with_deferred_warnings<T>(py: Python<'_>, f: impl FnOnce() -> PyResult<T>) -> PyResult<T> {
+    let (result, warned) = deferring_warnings(py, f);
+    let value = result?;
+    warned?;
+    Ok(value)
 }
 
 /// `warnings.warn(message, category)`, which raises if a `warnings` filter says so.
