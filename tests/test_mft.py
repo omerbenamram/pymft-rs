@@ -2,6 +2,8 @@ import csv
 import datetime
 import io
 import itertools
+import os
+import sys
 
 import pytest
 
@@ -517,3 +519,46 @@ def test_file_size_matches_csv(sample_mft: Path):
     rows = csv.DictReader(io.StringIO(b"".join(parser.entries_csv()).decode()))
     sizes = {int(row["EntryId"]): int(row["FileSize"]) for row in rows}
     assert sizes == {entry.entry_id: entry.file_size for entry in parser.entries()}
+
+
+@pytest.mark.parametrize("as_path", [str, Path, os.fsencode], ids=["str", "Path", "bytes"])
+def test_path_types(sample_mft: Path, as_path):
+    assert PyMftParser(as_path(sample_mft)).get_entry(0).full_path == "$MFT"
+
+
+def test_path_like_object(sample_mft: Path):
+    class Located:
+        def __fspath__(self):
+            return os.fsencode(sample_mft)
+
+    assert PyMftParser(Located()).get_entry(0).full_path == "$MFT"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="needs file names that are any bytes")
+def test_path_that_is_not_utf8(sample_mft: Path, tmp_path: Path):
+    path = os.fsencode(tmp_path) + b"/mft_\xff.bin"
+    with open(path, "wb") as copy:
+        copy.write(sample_mft.read_bytes()[: 16 * ENTRY_SIZE])
+
+    # As `os.listdir()` and `sys.argv` give it, and as bytes.
+    for name in (os.fsdecode(path), Path(os.fsdecode(path)), path):
+        assert PyMftParser(name).number_of_entries() == 16
+
+
+def test_missing_file_raises(tmp_path: Path):
+    with pytest.raises(FileNotFoundError):
+        PyMftParser(tmp_path / "missing")
+
+
+def test_text_file_is_a_type_error(sample_mft: Path):
+    with open(sample_mft, encoding="latin-1") as text:
+        with pytest.raises(TypeError, match="binary mode"):
+            PyMftParser(text)
+    with pytest.raises(TypeError, match="binary mode"):
+        PyMftParser(io.StringIO("FILE"))
+
+
+@pytest.mark.parametrize("value", [5, None, 1.5, object(), bytearray(b"MFT")])
+def test_other_types_are_a_type_error(value):
+    with pytest.raises(TypeError, match="expected a path .* not " + type(value).__name__):
+        PyMftParser(value)

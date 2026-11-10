@@ -40,6 +40,8 @@ Run `pip install -e .`
 
 ## Usage
 
+`PyMftParser` takes a path (`str`, `bytes` or `os.PathLike`, such as `pathlib.Path`) or a file-like object opened in binary mode.
+
 A parser can be iterated more than once, and `parser.get_entry(5)` reads a single entry by number.
 
 Iterating raises the `RuntimeError` or `OSError` of an entry or attribute that fails to parse, after stepping past it.

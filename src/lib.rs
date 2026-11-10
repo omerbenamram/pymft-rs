@@ -68,7 +68,8 @@ pub enum Output {
 /// --
 ///
 /// Returns an instance of the parser.
-/// Works on both a path (string), or a file-like object.
+/// Works on both a path (`str`, `bytes` or `os.PathLike`, such as `pathlib.Path`), or a file-like
+/// object opened in binary mode.
 ///
 /// A parser can be iterated any number of times, and its entries read by number with
 /// `get_entry`, including while an iteration is in progress.
@@ -92,7 +93,7 @@ pub struct PyMftParser {
 impl PyMftParser {
     #[new]
     #[pyo3(signature = (path_or_file_like, *, skip_errors = false))]
-    fn new(path_or_file_like: Py<PyAny>, skip_errors: bool) -> PyResult<Self> {
+    fn new(path_or_file_like: &Bound<'_, PyAny>, skip_errors: bool) -> PyResult<Self> {
         let file_or_file_like = FileOrFileLike::from_pyobject(path_or_file_like)?;
 
         let (boxed_read_seek, size) = match file_or_file_like {

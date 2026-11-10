@@ -18,6 +18,9 @@ and this project adheres to
 - Threads can share an iterator (`entries()`, `entries_json()`, `entries_csv()`, `attributes()`,
   `PyMftAttributeX20.entries()`): each item goes to one of them. A second thread calling `next()`
   got `RuntimeError: Already borrowed`.
+- `PyMftParser` takes `os.PathLike` (`pathlib.Path`) and `bytes` paths, and paths that aren't
+  UTF-8. It raises a `TypeError` that says what it takes for anything else, and for a file opened
+  in text mode, which gave `OSError: buffer size must be at least 4 bytes`.
 
 ## [0.10.1] - 2026-11-03
 
