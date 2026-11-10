@@ -145,10 +145,18 @@ impl PyMftParser {
     ///
     /// Returns the entry with this number, or `None` if its record is all zeroes (an entry
     /// `entries()` skips). Raises `IndexError` for a negative number or one past the last entry.
-    fn get_entry(&self, py: Python, entry_id: i64) -> PyResult<Option<Py<PyMftEntry>>> {
+    fn get_entry(
+        &self,
+        py: Python,
+        entry_id: &Bound<'_, PyAny>,
+    ) -> PyResult<Option<Py<PyMftEntry>>> {
         let count = self.entry_count;
-        let entry_id = match u64::try_from(entry_id) {
+        let entry_id = match entry_id.extract::<u64>() {
             Ok(id) if id < count => id,
+            // An integer, but negative or over 64 bits.
+            Err(error) if !error.is_instance_of::<exceptions::PyOverflowError>(py) => {
+                return Err(error);
+            }
             _ => {
                 return Err(PyErr::new::<exceptions::PyIndexError, _>(format!(
                     "entry {entry_id} is out of range ({count} entries)"
@@ -192,10 +200,13 @@ impl PyMftParser {
     fn __iter__(slf: PyRef<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
         slf.entries(slf.py())
     }
-    fn __next__(_slf: PyRef<Self>) -> PyResult<Option<Py<PyAny>>> {
-        Err(PyErr::new::<exceptions::PyNotImplementedError, _>(
-            "Using `next()` over `PyMftParser` is not supported. Try iterating over `PyMftParser(...).entries()`",
-        ))
+
+    fn __repr__(&self) -> String {
+        format!(
+            "<PyMftParser number_of_entries={} skip_errors={}>",
+            self.entry_count,
+            if self.skip_errors { "True" } else { "False" }
+        )
     }
 }
 
@@ -354,6 +365,8 @@ impl PyMftEntriesIterator {
 #[pymodule(gil_used = false)]
 fn mft(m: &Bound<'_, PyModule>) -> PyResult<()> {
     init_logging().ok();
+
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
 
     m.add_class::<PyMftParser>()?;
 

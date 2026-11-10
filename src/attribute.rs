@@ -24,6 +24,7 @@ use mft_rs::attribute::FileAttributeFlags;
 use mft_rs::attribute::x20::{AttributeListAttr, AttributeListEntry};
 use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
+use pyo3::types::PyString;
 
 use crate::err::PyMftError;
 use crate::utils::date_to_pyobject;
@@ -93,6 +94,15 @@ impl PyMftAttribute {
 
 #[pymethods]
 impl PyMftAttribute {
+    fn __repr__(&self, py: Python) -> PyResult<String> {
+        Ok(format!(
+            "<PyMftAttribute type_name={} name={} is_resident={}>",
+            PyString::new(py, &self.type_name).repr()?,
+            PyString::new(py, &self.name).repr()?,
+            if self.is_resident { "True" } else { "False" }
+        ))
+    }
+
     /// The value of a resident attribute as stored in the record, or `None` for a non-resident
     /// one. Parsed classes don't keep every byte (reserved fields, slack after names), so this
     /// is how to get them.
