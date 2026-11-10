@@ -15,8 +15,12 @@ class PyMftParser:
     number, including while an iteration is in progress. Threads can share a parser.
 
     A file-like object is read at the parser's own position: the parser seeks before every
-    read, so the object can be used elsewhere between calls, by another parser too. Not from
-    another thread at the same time, as a seek and its read are two calls.
+    read, so the object can be used elsewhere between the parser's calls, by another parser
+    too. That only holds on one thread. A seek and its read are two calls on the object, so
+    if another thread uses the object at the same time (directly, or through a second
+    parser over it), the two can interleave and a read can return the bytes of another
+    record. Threads can share one parser, whose lock covers both calls; give each thread's
+    parser its own file object.
 
     Iterating over entries or attributes raises `RuntimeError` or `OSError` for one that
     fails to parse, after stepping past it, so `next()` can go on. With `skip_errors=True`
