@@ -73,6 +73,10 @@ pub enum Output {
 /// A parser can be iterated any number of times, and its entries read by number with
 /// `get_entry`, including while an iteration is in progress.
 ///
+/// A file-like object is read at the parser's own position: the parser seeks before every read,
+/// so the object can be used elsewhere between calls, by another parser too. Not from another
+/// thread at the same time, as a seek and its read are two calls.
+///
 /// Iterating over entries or attributes raises `RuntimeError` or `OSError` for one that fails to
 /// parse, after stepping past it, so `next()` can go on. With `skip_errors=True` it is skipped
 /// instead, with a `RuntimeWarning` that `warnings` filters can count, log or turn back into an

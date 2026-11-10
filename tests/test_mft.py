@@ -461,3 +461,34 @@ def test_skip_errors_still_raises_read_errors(sample_mft: Path):
 
     with pytest.raises(OSError, match="bad sector"):
         list(parser.entries())
+
+
+def entry_summaries(entries):
+    return [(entry.entry_id, entry.sequence, entry.full_path) for entry in entries]
+
+
+def test_moving_the_file_object_does_not_move_the_parser(sample_mft: Path):
+    expected = entry_summaries(itertools.islice(PyMftParser(str(sample_mft)).entries(), 6))
+
+    with open(sample_mft, "rb") as m:
+        entries = PyMftParser(m).entries()
+        seen = []
+        for position in (0, 5 * ENTRY_SIZE, 123, 0, 2 * ENTRY_SIZE, 0):
+            seen.append(next(entries))
+            m.seek(position)
+            m.read(10)
+
+    assert entry_summaries(seen) == expected
+
+
+def test_two_parsers_can_share_a_file_object(sample_mft: Path):
+    expected = entry_summaries(itertools.islice(PyMftParser(str(sample_mft)).entries(), 50))
+
+    with open(sample_mft, "rb") as m:
+        first, second = PyMftParser(m), PyMftParser(m)
+        pairs = list(itertools.islice(zip(first.entries(), second.entries()), 50))
+        # Entry 30's record is far from where the iterators are.
+        assert first.get_entry(30).entry_id == second.get_entry(30).entry_id == 30
+
+    assert entry_summaries(a for a, _ in pairs) == expected
+    assert entry_summaries(b for _, b in pairs) == expected

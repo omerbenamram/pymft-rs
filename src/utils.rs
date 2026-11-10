@@ -6,12 +6,58 @@ use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAnyMethods, PyString, PyStringMethods};
 use pyo3_file::PyFileLikeObject;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
 #[derive(Debug)]
 pub enum FileOrFileLike {
     File(String),
-    FileLike(PyFileLikeObject),
+    FileLike(PinnedFileLike),
+}
+
+/// A Python file object, read at a position kept here instead of the object's own.
+///
+/// The object stays usable from Python, where anything can move its position: the caller's own
+/// `seek` or `read`, or a second parser over the same object. So every read seeks first. A reader
+/// that trusts the stream to stay where its last read left it (as `MftParser` does for
+/// sequential entries) would return the bytes of another entry.
+#[derive(Debug)]
+pub struct PinnedFileLike {
+    inner: PyFileLikeObject,
+    position: u64,
+}
+
+impl PinnedFileLike {
+    fn new(inner: PyFileLikeObject) -> Self {
+        PinnedFileLike { inner, position: 0 }
+    }
+}
+
+impl Read for PinnedFileLike {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let read = Python::attach(|py| {
+            self.inner.py_seek(py, SeekFrom::Start(self.position))?;
+            self.inner.py_read(py, buf)
+        })?;
+        self.position += read as u64;
+        Ok(read)
+    }
+}
+
+impl Seek for PinnedFileLike {
+    /// Only moves the position kept here, which the next read seeks to. Seeking from the end asks
+    /// the object, as that is the only way to learn its size.
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.position = match pos {
+            SeekFrom::Start(offset) => offset,
+            SeekFrom::Current(delta) => self
+                .position
+                .checked_add_signed(delta)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek out of range"))?,
+            SeekFrom::End(_) => self.inner.seek(pos)?,
+        };
+        Ok(self.position)
+    }
 }
 
 impl FileOrFileLike {
@@ -32,7 +78,7 @@ impl FileOrFileLike {
 
             // We only need read + seek (no write, no fileno).
             PyFileLikeObject::with_requirements(path_or_file_like, true, false, true, false)
-                .map(FileOrFileLike::FileLike)
+                .map(|file| FileOrFileLike::FileLike(PinnedFileLike::new(file)))
         })
     }
 }
