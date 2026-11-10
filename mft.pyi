@@ -11,8 +11,9 @@ class PyMftParser:
     """Returns an instance of the parser.
 
     Works on both a path (`str`, `bytes` or `os.PathLike`, such as `pathlib.Path`), or a
-    file-like object opened in binary mode. Raises `TypeError` for anything else, a file
-    opened in text mode included.
+    file-like object opened in binary mode. An object with `read` and `seek` is read as a
+    file object, also when it is an `os.PathLike`. Raises `TypeError` for anything else, a
+    file opened in text mode included.
 
     A parser can be iterated any number of times, and `get_entry` reads one entry by
     number, including while an iteration is in progress. Threads can share a parser.

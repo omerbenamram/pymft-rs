@@ -689,3 +689,27 @@ def test_text_file_is_a_type_error(sample_mft: Path):
 def test_other_types_are_a_type_error(value):
     with pytest.raises(TypeError, match="expected a path .* not " + type(value).__name__):
         PyMftParser(value)
+
+
+def test_a_file_object_with_a_path_is_read_as_a_file_object(sample_mft: Path, tmp_path: Path):
+    # Like fsspec's `LocalFileOpener`, or a wrapper that decompresses: the object's `read` gives
+    # the content, which isn't what is on disk under its name.
+    class Opened(io.BytesIO):
+        def __fspath__(self):
+            return str(tmp_path / "compressed.gz")
+
+    (tmp_path / "compressed.gz").write_bytes(b"not an MFT")
+    parser = PyMftParser(Opened(sample_mft.read_bytes()[: 16 * ENTRY_SIZE]))
+    assert parser.number_of_entries() == 16
+    assert parser.get_entry(0).full_path == "$MFT"
+
+
+def test_a_path_like_with_only_read_is_a_path(sample_mft: Path):
+    class Located:
+        def __fspath__(self):
+            return str(sample_mft)
+
+        def read(self):
+            raise AssertionError("not a file object: it has no seek")
+
+    assert PyMftParser(Located()).get_entry(0).full_path == "$MFT"

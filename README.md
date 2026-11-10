@@ -41,6 +41,7 @@ Run `pip install -e .`
 ## Usage
 
 `PyMftParser` takes a path (`str`, `bytes` or `os.PathLike`, such as `pathlib.Path`) or a file-like object opened in binary mode.
+An object with `read` and `seek` is read as a file object, also when it is an `os.PathLike`.
 
 A parser can be iterated more than once, and `parser.get_entry(5)` reads a single entry by number.
 

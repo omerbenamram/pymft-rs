@@ -68,7 +68,8 @@ pub enum Output {
 ///
 /// Returns an instance of the parser.
 /// Works on both a path (`str`, `bytes` or `os.PathLike`, such as `pathlib.Path`), or a file-like
-/// object opened in binary mode.
+/// object opened in binary mode. An object with `read` and `seek` is read as a file object, also
+/// when it is an `os.PathLike`.
 ///
 /// A parser can be iterated any number of times, and its entries read by number with
 /// `get_entry`, including while an iteration is in progress.
