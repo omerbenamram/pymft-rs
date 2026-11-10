@@ -15,7 +15,7 @@ use mft_rs::{MftEntry, MftParser};
 use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read, Seek};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use pyo3::exceptions;
 use pyo3::prelude::*;
@@ -75,8 +75,10 @@ pub enum Output {
 /// A parser can be iterated any number of times, and its entries read by number with
 /// `get_entry`, including while an iteration is in progress.
 ///
-/// A file-like object is read at the parser's own position: the parser seeks before every read,
-/// so the object can be used elsewhere between the parser's calls, by another parser too. That
+/// A file-like object is read at the parser's own position: the parser seeks before every read of
+/// the object (entries read in order are fetched 64 KiB at a time, so up to that much ahead of
+/// the entry asked for). So the object can be used elsewhere between the parser's calls, by
+/// another parser too. That
 /// only holds on one thread. A seek and its read are two calls on the object, so if another
 /// thread uses the object at the same time (directly, or through a second parser over it), the
 /// two can interleave and a read can return the bytes of another record. Threads can share one
@@ -209,7 +211,7 @@ impl PyMftParser {
                 inner: Arc::clone(&self.inner),
                 output_format,
                 skip_errors: self.skip_errors,
-                state: ReentryCheckedMutex::new(IteratorState {
+                state: Mutex::new(IteratorState {
                     current_record: 0,
                     csv_header_written: false,
                 }),
@@ -225,9 +227,10 @@ pub struct PyMftEntriesIterator {
     total_number_of_records: u64,
     output_format: Output,
     skip_errors: bool,
-    /// Locked before the parser, and for as long: entries leave in order, and the CSV header
-    /// goes with the first of them.
-    state: ReentryCheckedMutex<IteratorState>,
+    /// Only locked with the parser locked, so it is never waited for, and a thread that calls
+    /// the iterator again from its file object's `read` is stopped at the parser's lock. Held as
+    /// long as the parser: entries leave in order, and the CSV header goes with the first of them.
+    state: Mutex<IteratorState>,
 }
 
 struct IteratorState {
@@ -254,7 +257,8 @@ impl PyMftEntriesIterator {
                     ..
                 } = step
                 {
-                    self.state.lock(py, "the iterator")?.csv_header_written = false;
+                    let _parser = lock_parser(&self.inner, py)?;
+                    self.lock_state().csv_header_written = false;
                 }
                 return Err(error);
             }
@@ -281,9 +285,14 @@ enum Step {
 }
 
 impl PyMftEntriesIterator {
+    /// For a caller that has the parser locked.
+    fn lock_state(&self) -> MutexGuard<'_, IteratorState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn next_entry(&self, py: Python) -> PyResult<Step> {
-        let mut state = self.state.lock(py, "the iterator")?;
         let mut parser = lock_parser(&self.inner, py)?;
+        let mut state = self.lock_state();
 
         while state.current_record < self.total_number_of_records {
             let id = state.current_record;
