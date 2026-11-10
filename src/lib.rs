@@ -15,7 +15,7 @@ use mft_rs::{MftEntry, MftParser};
 use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read, Seek};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use pyo3::exceptions;
 use pyo3::prelude::*;
@@ -201,7 +201,7 @@ impl PyMftParser {
                 inner: Arc::clone(&self.inner),
                 output_format,
                 skip_errors: self.skip_errors,
-                state: ReentryCheckedMutex::new(IteratorState {
+                state: Mutex::new(IteratorState {
                     current_record: 0,
                     csv_header_written: false,
                 }),
@@ -217,9 +217,10 @@ pub struct PyMftEntriesIterator {
     total_number_of_records: u64,
     output_format: Output,
     skip_errors: bool,
-    /// Locked before the parser, and for as long: entries leave in order, and the CSV header
-    /// goes with the first of them.
-    state: ReentryCheckedMutex<IteratorState>,
+    /// Only locked with the parser locked, so it is never waited for, and a thread that calls
+    /// the iterator again from its file object's `read` is stopped at the parser's lock. Held as
+    /// long as the parser: entries leave in order, and the CSV header goes with the first of them.
+    state: Mutex<IteratorState>,
 }
 
 struct IteratorState {
@@ -235,8 +236,8 @@ impl PyMftEntriesIterator {
 
     fn __next__(&self, py: Python) -> PyResult<Option<Py<PyAny>>> {
         loop {
-            let mut state = self.state.lock(py, "the iterator")?;
             let mut parser = lock_parser(&self.inner, py)?;
+            let mut state = self.lock_state();
 
             let error = loop {
                 if state.current_record >= self.total_number_of_records {
@@ -268,8 +269,8 @@ impl PyMftEntriesIterator {
             };
 
             // Unlocked while warning, as a `warnings` hook may use the parser or this iterator.
-            drop(parser);
             drop(state);
+            drop(parser);
             let (id, error) = error;
             skip_or_raise(py, self.skip_errors, format_args!("entry {id}"), error)?;
         }
@@ -277,6 +278,11 @@ impl PyMftEntriesIterator {
 }
 
 impl PyMftEntriesIterator {
+    /// For a caller that has the parser locked.
+    fn lock_state(&self) -> MutexGuard<'_, IteratorState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn entry_to_json(entry: MftEntry, py: Python) -> PyResult<Py<PyAny>> {
         let json = sonic_rs::to_string(&entry).map_err(|_| {
             PyErr::new::<exceptions::PyRuntimeError, _>("JSON Serialization failed")

@@ -657,7 +657,7 @@ def test_an_iterator_called_from_its_own_read_raises(sample_mft: Path, method: s
     run_or_fail(lambda: seen.extend(entries))
 
     assert isinstance(source.raised, RuntimeError)
-    assert "the iterator is already in use by this thread" in str(source.raised)
+    assert "the parser is already in use by this thread" in str(source.raised)
     # The call that was running went on.
     assert len(seen) == total - 1
 
