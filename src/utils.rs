@@ -2,45 +2,220 @@ use log::{Level, Log, Metadata, Record, SetLoggerError};
 
 use jiff::tz::Offset;
 use mft_rs::Timestamp;
+use pyo3::exceptions::{PyTypeError, PyUserWarning};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyAnyMethods, PyString, PyStringMethods};
+use pyo3::types::{PyAnyMethods, PyBytes, PyString, PyTypeMethods};
 use pyo3_file::PyFileLikeObject;
-use std::path::Path;
+use std::cell::RefCell;
+use std::ffi::CString;
+use std::io::{self, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub enum FileOrFileLike {
-    File(String),
-    FileLike(PyFileLikeObject),
+    File(PathBuf),
+    FileLike(PinnedFileLike),
 }
 
-impl FileOrFileLike {
-    pub fn from_pyobject(path_or_file_like: Py<PyAny>) -> PyResult<FileOrFileLike> {
+/// How much of a Python file object is fetched at a time.
+const WINDOW_SIZE: usize = 64 * 1024;
+
+/// A Python file object, read at a position kept here instead of the object's own.
+///
+/// The object stays usable from Python, where anything can move its position: the caller's own
+/// `seek` or `read`, or a second parser over the same object. So every read of the object seeks
+/// first. A reader that trusts the stream to stay where its last read left it (as `MftParser`
+/// does for sequential entries) would return the bytes of another entry.
+///
+/// Reads that follow one another are served from a window fetched in one go, as a `seek` and a
+/// `read` call for every record cost more than parsing it. So bytes may be fetched up to one
+/// window before they are asked for. A read from somewhere else (the record of a parent
+/// directory, to resolve a path) fetches only what it asks for and leaves the window alone.
+#[derive(Debug)]
+pub struct PinnedFileLike {
+    inner: PyFileLikeObject,
+    position: u64,
+    /// The bytes of the object from `window_start` on, as last fetched.
+    window: Vec<u8>,
+    window_start: u64,
+    /// Where the last read ended, to tell the reads that follow one another.
+    last_read_end: u64,
+}
+
+impl PinnedFileLike {
+    fn new(inner: PyFileLikeObject) -> Self {
+        PinnedFileLike {
+            inner,
+            position: 0,
+            window: Vec::new(),
+            window_start: 0,
+            last_read_end: 0,
+        }
+    }
+
+    /// The fetched bytes from the position on, which are none if it is outside the window.
+    fn fetched(&self) -> &[u8] {
+        self.position
+            .checked_sub(self.window_start)
+            .and_then(|offset| self.window.get(usize::try_from(offset).ok()?..))
+            .unwrap_or_default()
+    }
+
+    /// Reads the object at the position, wherever anything else left it.
+    fn fetch(&self, buf: &mut [u8]) -> io::Result<usize> {
         Python::attach(|py| {
-            // Is a path
-            let maybe_path: Option<String> = {
-                let bound = path_or_file_like.bind(py);
-                bound
-                    .cast::<PyString>()
-                    .ok()
-                    .map(|s| s.to_string_lossy().into_owned())
-            };
-
-            if let Some(path) = maybe_path {
-                return Ok(FileOrFileLike::File(path));
-            }
-
-            // We only need read + seek (no write, no fileno).
-            PyFileLikeObject::with_requirements(path_or_file_like, true, false, true, false)
-                .map(FileOrFileLike::FileLike)
+            self.inner.py_seek(py, SeekFrom::Start(self.position))?;
+            self.inner.py_read(py, buf)
         })
     }
 }
 
-/// A logger that prints all messages with a readable output format.
+impl Read for PinnedFileLike {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let read = if !self.fetched().is_empty() {
+            let fetched = self.fetched();
+            let read = fetched.len().min(buf.len());
+            buf[..read].copy_from_slice(&fetched[..read]);
+            read
+        } else if self.position == self.last_read_end && buf.len() < WINDOW_SIZE {
+            // Emptied first, so a failed fetch leaves no bytes under the wrong offset.
+            self.window.clear();
+            self.window_start = self.position;
+            let mut window = vec![0; WINDOW_SIZE];
+            let fetched = self.fetch(&mut window)?;
+            window.truncate(fetched);
+            self.window = window;
+
+            let read = fetched.min(buf.len());
+            buf[..read].copy_from_slice(&self.window[..read]);
+            read
+        } else {
+            self.fetch(buf)?
+        };
+        self.position += read as u64;
+        self.last_read_end = self.position;
+        Ok(read)
+    }
+}
+
+impl Seek for PinnedFileLike {
+    /// Only moves the position kept here, which the next read is served from. Seeking from the
+    /// end asks the object, as that is the only way to learn its size.
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.position = match pos {
+            SeekFrom::Start(offset) => offset,
+            SeekFrom::Current(delta) => self
+                .position
+                .checked_add_signed(delta)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek out of range"))?,
+            SeekFrom::End(_) => self.inner.seek(pos)?,
+        };
+        Ok(self.position)
+    }
+}
+
+impl FileOrFileLike {
+    pub fn from_pyobject(path_or_file_like: &Bound<'_, PyAny>) -> PyResult<FileOrFileLike> {
+        let py = path_or_file_like.py();
+
+        // A file object first: one can have a path too (fsspec's `LocalFileOpener`, a wrapper
+        // that decompresses), and what its `read` gives isn't what is on disk under that name.
+        // `read` and `seek` are all that is used, so `PyFileLikeObject` has nothing more to check.
+        if path_or_file_like.hasattr("read")? && path_or_file_like.hasattr("seek")? {
+            // A text file would be read as its characters encoded back to UTF-8.
+            let text_io = py.import("io")?.getattr("TextIOBase")?;
+            if path_or_file_like.is_instance(&text_io)? {
+                return Err(PyTypeError::new_err(
+                    "expected a file opened in binary mode ('rb'), not a text file",
+                ));
+            }
+            return PyFileLikeObject::py_new(path_or_file_like.clone())
+                .map(|file| FileOrFileLike::FileLike(PinnedFileLike::new(file)));
+        }
+
+        // A path: `str`, `bytes` or `os.PathLike`. `os.fsdecode` takes the three and decodes
+        // bytes the way Python does file names, so one that isn't UTF-8 is kept as it is.
+        if path_or_file_like.is_instance_of::<PyString>()
+            || path_or_file_like.is_instance_of::<PyBytes>()
+            || path_or_file_like.hasattr("__fspath__")?
+        {
+            let path = py
+                .import("os")?
+                .call_method1("fsdecode", (path_or_file_like,))?;
+            return Ok(FileOrFileLike::File(path.extract()?));
+        }
+
+        Err(PyTypeError::new_err(format!(
+            "expected a path (str, bytes or os.PathLike) or a binary file-like object with \
+             read() and seek(), not {}",
+            path_or_file_like.get_type().name()?
+        )))
+    }
+}
+
+thread_local! {
+    /// The warnings logged on this thread inside [`with_deferred_warnings`], if it is running.
+    static DEFERRED_WARNINGS: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+}
+
+/// Puts back the outer call's warnings, also when unwinding.
+struct DeferredWarningsScope(Option<Vec<String>>);
+
+impl Drop for DeferredWarningsScope {
+    fn drop(&mut self) {
+        DEFERRED_WARNINGS.set(self.0.take());
+    }
+}
+
+/// Runs `f`, which locks the parser, and only then sends the warnings the `mft` crate logged in
+/// it to `warnings.warn`, which runs Python code: a `warnings` hook must be able to use the
+/// parser. Every warning is sent, whatever `f` and the ones before it came to.
+///
+/// Returns the result of `f`, and the error of the first warning that a `warnings` filter turned
+/// into one.
+pub fn deferring_warnings<T>(
+    py: Python<'_>,
+    f: impl FnOnce() -> PyResult<T>,
+) -> (PyResult<T>, PyResult<()>) {
+    let (result, messages) = {
+        // Calls nest when a file-like object's `read` uses another parser.
+        let _scope = DeferredWarningsScope(DEFERRED_WARNINGS.replace(Some(Vec::new())));
+        let result = f();
+        (result, DEFERRED_WARNINGS.take().unwrap_or_default())
+    };
+    let mut warned = Ok(());
+    if !messages.is_empty() {
+        let category = py.get_type::<PyUserWarning>();
+        for message in messages {
+            let sent = warn(py, &category, message);
+            if warned.is_ok() {
+                warned = sent;
+            }
+        }
+    }
+    (result, warned)
+}
+
+/// [`deferring_warnings`], raising the error of `f`, or else of a warning in place of the value
+/// of `f`.
+pub fn with_deferred_warnings<T>(py: Python<'_>, f: impl FnOnce() -> PyResult<T>) -> PyResult<T> {
+    let (result, warned) = deferring_warnings(py, f);
+    let value = result?;
+    warned?;
+    Ok(value)
+}
+
+/// `warnings.warn(message, category)`, which raises if a `warnings` filter says so.
+pub fn warn(py: Python<'_>, category: &Bound<'_, PyAny>, message: String) -> PyResult<()> {
+    // A warning's message can't hold a NUL.
+    let message = CString::new(message.replace('\0', "\\0")).expect("NULs were escaped");
+    PyErr::warn(py, category, &message, 1)
+}
+
+/// Sends the warnings the `mft` crate logs to Python's `warnings`.
 struct PyLogger {
     level: Level,
-    warnings_module: Py<PyAny>,
 }
 
 impl Log for PyLogger {
@@ -53,20 +228,27 @@ impl Log for PyLogger {
             return;
         }
 
-        if let Level::Warn = self.level {
-            let level_string = record.level().to_string();
-            Python::attach(|py| {
-                let message = format!(
-                    "{:<5} [{}] {}",
-                    level_string,
-                    record.module_path().unwrap_or_default(),
-                    record.args()
-                );
+        let message = format!(
+            "{:<5} [{}] {}",
+            record.level(),
+            record.module_path().unwrap_or_default(),
+            record.args()
+        );
+        let message = DEFERRED_WARNINGS.with_borrow_mut(|deferred| match deferred {
+            Some(messages) => {
+                messages.push(message);
+                None
+            }
+            None => Some(message),
+        });
 
-                let _ = self
-                    .warnings_module
-                    .bind(py)
-                    .call_method1("warn", (message,));
+        // Logged outside `with_deferred_warnings`, so no lock is held, and nothing can raise an
+        // error from here either.
+        if let Some(message) = message {
+            Python::attach(|py| {
+                if let Err(error) = warn(py, &py.get_type::<PyUserWarning>(), message) {
+                    error.write_unraisable(py, None);
+                }
             })
         }
     }
@@ -74,19 +256,8 @@ impl Log for PyLogger {
     fn flush(&self) {}
 }
 
-pub fn init_logging(py: Python<'_>) -> Result<(), SetLoggerError> {
-    let warnings = py
-        .import("warnings")
-        .expect("python to have warnings module")
-        .into_any()
-        .unbind();
-
-    let logger = PyLogger {
-        level: Level::Warn,
-        warnings_module: warnings,
-    };
-
-    log::set_boxed_logger(Box::new(logger))?;
+pub fn init_logging() -> Result<(), SetLoggerError> {
+    log::set_boxed_logger(Box::new(PyLogger { level: Level::Warn }))?;
     log::set_max_level(Level::Warn.to_level_filter());
 
     Ok(())

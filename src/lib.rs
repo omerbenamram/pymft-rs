@@ -3,6 +3,7 @@
 
 mod attribute;
 mod entry;
+mod lock;
 mod utils;
 
 pub(crate) mod err;
@@ -16,11 +17,11 @@ use mft_rs::{MftEntry, MftParser};
 use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read, Seek};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use pyo3::exceptions;
 use pyo3::prelude::*;
-use pyo3::sync::MutexExt;
 
 use crate::attribute::{
     PyMftAce, PyMftAcl, PyMftAttribute, PyMftAttributeNonResident, PyMftAttributeOther,
@@ -31,7 +32,8 @@ use crate::attribute::{
 };
 use crate::entry::PyMftAttributesIter;
 use crate::err::{PyMftError, skip_or_raise};
-use crate::utils::{FileOrFileLike, init_logging};
+use crate::lock::{ReentryCheckedGuard, ReentryCheckedMutex};
+use crate::utils::{FileOrFileLike, deferring_warnings, init_logging, with_deferred_warnings};
 use csv::WriterBuilder;
 use pyo3::types::{PyBytes, PyString};
 
@@ -44,19 +46,18 @@ pub trait ReadSeek: Read + Seek {
 impl<T: Read + Seek> ReadSeek for T {}
 
 type BoxedParser = MftParser<Box<dyn ReadSeek + Send + Sync>>;
-type SharedParser = Arc<Mutex<BoxedParser>>;
+type SharedParser = Arc<ReentryCheckedMutex<BoxedParser>>;
 
 /// Locks the parser shared by a `PyMftParser` and its iterators.
 ///
-/// The GIL is released while waiting, so a thread holding the lock can call back into Python (a
-/// file-like object's `read`) without deadlocking. The lock is not reentrant: Python code run
-/// while it is held (a file-like object's `read`, a `warnings` hook, a signal handler) must not
-/// call back into the same parser. A poisoned lock is recovered, since a panic can only happen
-/// after an entry's bytes were read.
-fn lock_parser<'a>(parser: &'a SharedParser, py: Python<'_>) -> MutexGuard<'a, BoxedParser> {
-    parser
-        .lock_py_attached(py)
-        .unwrap_or_else(PoisonError::into_inner)
+/// The lock is held while Python code runs (a file-like object's `read` and `seek`). If that
+/// code calls back into the same parser, it gets a `RuntimeError`. Warnings are sent once it is
+/// released (`with_deferred_warnings`), so a `warnings` hook can use the parser.
+fn lock_parser<'a>(
+    parser: &'a SharedParser,
+    py: Python<'_>,
+) -> PyResult<ReentryCheckedGuard<'a, BoxedParser>> {
+    parser.lock(py, "the parser")
 }
 
 pub enum Output {
@@ -71,15 +72,31 @@ pub enum Output {
 /// --
 ///
 /// Returns an instance of the parser.
-/// Works on both a path (string), or a file-like object.
+/// Works on both a path (`str`, `bytes` or `os.PathLike`, such as `pathlib.Path`), or a file-like
+/// object opened in binary mode. An object with `read` and `seek` is read as a file object, also
+/// when it is an `os.PathLike`.
 ///
 /// A parser can be iterated any number of times, and its entries read by number with
 /// `get_entry`, including while an iteration is in progress.
+///
+/// A file-like object is read at the parser's own position: the parser seeks before every read of
+/// the object (entries read in order are fetched 64 KiB at a time, so up to that much ahead of
+/// the entry asked for). So the object can be used elsewhere between the parser's calls, by
+/// another parser too. That
+/// only holds on one thread. A seek and its read are two calls on the object, so if another
+/// thread uses the object at the same time (directly, or through a second parser over it), the
+/// two can interleave and a read can return the bytes of another record. Threads can share one
+/// parser, whose lock covers both calls; give each thread's parser its own file object.
 ///
 /// Iterating over entries or attributes raises `RuntimeError` or `OSError` for one that fails to
 /// parse, after stepping past it, so `next()` can go on. With `skip_errors=True` it is skipped
 /// instead, with a `RuntimeWarning` that `warnings` filters can count, log or turn back into an
 /// error. Failing to read the file raises either way.
+///
+/// What the parser notices but reads anyway, such as a record whose fixup values don't match, is
+/// reported as a `UserWarning`. If a `warnings` filter turns it into an error (`-W error`), the
+/// call that read the record raises it and doesn't return the entry: `get_entry` raises every
+/// time, and an iterator steps past the entry, as for one that fails to parse.
 pub struct PyMftParser {
     inner: SharedParser,
     /// Fixed once the parser is built, so reading it doesn't need the lock.
@@ -91,7 +108,7 @@ pub struct PyMftParser {
 impl PyMftParser {
     #[new]
     #[pyo3(signature = (path_or_file_like, *, skip_errors = false))]
-    fn new(path_or_file_like: Py<PyAny>, skip_errors: bool) -> PyResult<Self> {
+    fn new(path_or_file_like: &Bound<'_, PyAny>, skip_errors: bool) -> PyResult<Self> {
         let file_or_file_like = FileOrFileLike::from_pyobject(path_or_file_like)?;
 
         let (boxed_read_seek, size) = match file_or_file_like {
@@ -113,7 +130,7 @@ impl PyMftParser {
 
         Ok(PyMftParser {
             entry_count: parser.get_entry_count(),
-            inner: Arc::new(Mutex::new(parser)),
+            inner: Arc::new(ReentryCheckedMutex::new(parser)),
             skip_errors,
         })
     }
@@ -131,14 +148,20 @@ impl PyMftParser {
     ///
     /// Returns the entry with this number, or `None` if its record is all zeroes (an entry
     /// `entries()` skips). Raises `IndexError` for a negative number or one past the last entry.
-    fn get_entry(&self, py: Python, entry_id: i64) -> PyResult<Option<Py<PyMftEntry>>> {
-        let entry_id = self.check_entry_id(entry_id)?;
-        let mut parser = lock_parser(&self.inner, py);
-        let entry = parser.get_entry(entry_id).map_err(PyMftError)?;
-        if &entry.header.signature == ZERO_HEADER {
-            return Ok(None);
-        }
-        PyMftEntry::from_mft_entry(py, entry, &mut parser, self.skip_errors).map(Some)
+    fn get_entry(
+        &self,
+        py: Python,
+        entry_id: &Bound<'_, PyAny>,
+    ) -> PyResult<Option<Py<PyMftEntry>>> {
+        let entry_id = self.entry_id_in_range(py, entry_id)?;
+        with_deferred_warnings(py, || {
+            let mut parser = lock_parser(&self.inner, py)?;
+            let entry = parser.get_entry(entry_id).map_err(PyMftError)?;
+            if &entry.header.signature == ZERO_HEADER {
+                return Ok(None);
+            }
+            PyMftEntry::from_mft_entry(py, entry, &mut parser, self.skip_errors).map(Some)
+        })
     }
 
     /// entries(self, /)
@@ -184,20 +207,26 @@ impl PyMftParser {
     /// content in `data`. A non-resident one has `data=None`, since its content is on the volume
     /// rather than in the MFT. An all-zero record and an extension record have none (ask for its
     /// base record). Raises `IndexError` like `get_entry`.
-    fn data_streams(&self, py: Python, entry_id: i64) -> PyResult<Vec<Py<PyMftDataStream>>> {
-        let entry_id = self.check_entry_id(entry_id)?;
-        let mut parser = lock_parser(&self.inner, py);
-        let entry = parser.get_entry(entry_id).map_err(PyMftError)?;
-        // An all-zero record (which `get_entry` returns as `None`) has none, and an extension
-        // record's streams belong to the file of its base record.
-        if &entry.header.signature == ZERO_HEADER || !entry.header.is_base_record() {
-            return Ok(Vec::new());
-        }
-        let extensions = parser.get_extension_entries(&entry);
-        drop(parser);
+    fn data_streams(
+        &self,
+        py: Python,
+        entry_id: &Bound<'_, PyAny>,
+    ) -> PyResult<Vec<Py<PyMftDataStream>>> {
+        let entry_id = self.entry_id_in_range(py, entry_id)?;
+        let records = with_deferred_warnings(py, || {
+            let mut parser = lock_parser(&self.inner, py)?;
+            let entry = parser.get_entry(entry_id).map_err(PyMftError)?;
+            // An all-zero record (which `get_entry` returns as `None`) has none, and an extension
+            // record's streams belong to the file of its base record.
+            if &entry.header.signature == ZERO_HEADER || !entry.header.is_base_record() {
+                return Ok(Vec::new());
+            }
+            let extensions = parser.get_extension_entries(&entry);
+            Ok(std::iter::once(entry).chain(extensions).collect())
+        })?;
 
         let mut streams = Vec::new();
-        for record in std::iter::once(&entry).chain(&extensions) {
+        for record in &records {
             let record_number = record.header.record_number;
             // Only the header is parsed, so a non-resident stream whose data runs don't decode
             // still gets listed: its content isn't read here anyway.
@@ -248,19 +277,25 @@ impl PyMftParser {
     fn __iter__(slf: PyRef<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
         slf.entries(slf.py())
     }
-    fn __next__(_slf: PyRef<Self>) -> PyResult<Option<Py<PyAny>>> {
-        Err(PyErr::new::<exceptions::PyNotImplementedError, _>(
-            "Using `next()` over `PyMftParser` is not supported. Try iterating over `PyMftParser(...).entries()`",
-        ))
+
+    fn __repr__(&self) -> String {
+        format!(
+            "<PyMftParser number_of_entries={} skip_errors={}>",
+            self.entry_count,
+            if self.skip_errors { "True" } else { "False" }
+        )
     }
 }
 
 impl PyMftParser {
-    /// Raises `IndexError` for a negative number or one past the last entry.
-    fn check_entry_id(&self, entry_id: i64) -> PyResult<u64> {
+    /// The entry number `entry_id` stands for. Raises `IndexError` for any integer that is out of
+    /// range, and `TypeError` for anything else.
+    fn entry_id_in_range(&self, py: Python, entry_id: &Bound<'_, PyAny>) -> PyResult<u64> {
         let count = self.entry_count;
-        match u64::try_from(entry_id) {
+        match entry_id.extract::<u64>() {
             Ok(id) if id < count => Ok(id),
+            // An integer, but negative or over 64 bits.
+            Err(error) if !error.is_instance_of::<exceptions::PyOverflowError>(py) => Err(error),
             _ => Err(PyErr::new::<exceptions::PyIndexError, _>(format!(
                 "entry {entry_id} is out of range ({count} entries)"
             ))),
@@ -277,36 +312,89 @@ impl PyMftParser {
             PyMftEntriesIterator {
                 total_number_of_records: self.entry_count,
                 inner: Arc::clone(&self.inner),
-                current_record: 0,
                 output_format,
-                csv_header_written: false,
                 skip_errors: self.skip_errors,
+                next_record: Mutex::new(0),
+                csv_header_written: AtomicBool::new(false),
             },
         )
     }
 }
 
-#[pyclass(module = "mft")]
+/// Threads can share an iterator: each entry goes to one of them.
+#[pyclass(frozen, module = "mft")]
 pub struct PyMftEntriesIterator {
     inner: SharedParser,
     total_number_of_records: u64,
-    current_record: u64,
     output_format: Output,
-    csv_header_written: bool,
     skip_errors: bool,
+    /// The number of the next record to read. Only locked with the parser locked, so it is never
+    /// waited for, and a thread that calls the iterator again from its file object's `read` is
+    /// stopped at the parser's lock. Held as long as the parser, so entries leave in order.
+    next_record: Mutex<u64>,
+    /// Whether a row was returned with the CSV header.
+    csv_header_written: AtomicBool,
 }
 
 #[pymethods]
 impl PyMftEntriesIterator {
-    fn __iter__(slf: PyRefMut<Self>) -> PyResult<Py<PyMftEntriesIterator>> {
-        Ok(slf.into())
+    fn __iter__(slf: PyRef<Self>) -> Py<PyMftEntriesIterator> {
+        slf.into()
     }
 
-    fn __next__(&mut self, py: Python) -> PyResult<Option<Py<PyAny>>> {
-        let mut parser = lock_parser(&self.inner, py);
-        while self.current_record < self.total_number_of_records {
-            let id = self.current_record;
-            self.current_record += 1;
+    fn __next__(&self, py: Python) -> PyResult<Option<Py<PyAny>>> {
+        loop {
+            // Unlocked while warning, as a `warnings` hook may use the parser or this iterator.
+            let (step, warned) = deferring_warnings(py, || self.next_entry(py));
+            let step = step?;
+            // The entry that warned isn't returned.
+            warned?;
+            match step {
+                Step::End => return Ok(None),
+                Step::Yield(item) => return Ok(Some(item)),
+                Step::YieldCsv { row, header_length } => {
+                    // The header goes with the first row that is returned, which the first one
+                    // read may not be.
+                    let had_header =
+                        header_length > 0 && self.csv_header_written.swap(true, Ordering::Relaxed);
+                    let row = if had_header {
+                        &row[header_length..]
+                    } else {
+                        &row[..]
+                    };
+                    return Ok(Some(PyBytes::new(py, row).into_any().unbind()));
+                }
+                Step::Failed(id, error) => {
+                    skip_or_raise(py, self.skip_errors, format_args!("entry {id}"), error)?
+                }
+            }
+        }
+    }
+}
+
+/// What reading the next entry came to, once the locks are released.
+enum Step {
+    /// There are no more entries.
+    End,
+    /// The entry, as an object or JSON.
+    Yield(Py<PyAny>),
+    /// The entry's CSV row, after a header of this length if none was returned when it was read.
+    YieldCsv { row: Vec<u8>, header_length: usize },
+    /// The entry with this number failed to parse.
+    Failed(u64, mft_rs::err::Error),
+}
+
+impl PyMftEntriesIterator {
+    fn next_entry(&self, py: Python) -> PyResult<Step> {
+        let mut parser = lock_parser(&self.inner, py)?;
+        let mut next_record = self
+            .next_record
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+
+        while *next_record < self.total_number_of_records {
+            let id = *next_record;
+            *next_record += 1;
 
             let entry = match parser.get_entry(id) {
                 Ok(entry) if &entry.header.signature == ZERO_HEADER => continue,
@@ -315,36 +403,28 @@ impl PyMftEntriesIterator {
                 Err(error @ mft_rs::err::Error::IoError { .. }) => {
                     return Err(PyMftError(error).into());
                 }
-                Err(error) => {
-                    // Unlocked while warning, as a `warnings` hook may use the parser.
-                    drop(parser);
-                    skip_or_raise(py, self.skip_errors, format_args!("entry {id}"), error)?;
-                    parser = lock_parser(&self.inner, py);
-                    continue;
-                }
+                Err(error) => return Ok(Step::Failed(id, error)),
             };
-            let item = match self.output_format {
+            return match self.output_format {
                 Output::Python => {
                     PyMftEntry::from_mft_entry(py, entry, &mut parser, self.skip_errors)
-                        .map(|entry| Some(entry.into_any()))
+                        .map(|entry| Step::Yield(entry.into_any()))
                 }
-                Output::JSON => Self::entry_to_json(entry, py).map(Some),
+                Output::JSON => Self::entry_to_json(entry, py).map(Step::Yield),
                 Output::CSV => {
-                    Self::entry_to_csv(&mut self.csv_header_written, &mut parser, entry, py)
-                        .map(Some)
+                    let with_header = !self.csv_header_written.load(Ordering::Relaxed);
+                    Self::entry_to_csv(with_header, &mut parser, entry)
                 }
-                // `None` for an entry without bodyfile lines, which is skipped.
-                Output::Bodyfile => Self::entry_to_bodyfile(&mut parser, &entry, py),
-            }?;
-            if item.is_some() {
-                return Ok(item);
-            }
+                // An entry without bodyfile lines is skipped.
+                Output::Bodyfile => match Self::entry_to_bodyfile(&mut parser, &entry, py)? {
+                    Some(lines) => Ok(Step::Yield(lines)),
+                    None => continue,
+                },
+            };
         }
-        Ok(None)
+        Ok(Step::End)
     }
-}
 
-impl PyMftEntriesIterator {
     /// The entry's bodyfile lines, or `None` if it has none (an extension record, or an entry
     /// without a `$FILE_NAME`).
     fn entry_to_bodyfile(
@@ -382,24 +462,26 @@ impl PyMftEntriesIterator {
     }
 
     fn entry_to_csv(
-        csv_header_written: &mut bool,
+        with_header: bool,
         parser: &mut BoxedParser,
         entry: MftEntry,
-        py: Python,
-    ) -> PyResult<Py<PyAny>> {
+    ) -> PyResult<Step> {
         let mut writer = WriterBuilder::new()
-            .has_headers(!*csv_header_written)
+            .has_headers(with_header)
             .from_writer(Vec::new());
 
         writer
             .serialize(FlatMftEntryWithName::from_entry(&entry, parser))
             .map_err(|_| PyErr::new::<exceptions::PyRuntimeError, _>("CSV Serialization failed"))?;
-        let bytes = writer
+        let row = writer
             .into_inner()
             .map_err(|e| PyErr::new::<exceptions::PyRuntimeError, _>(e.to_string()))?;
-        // Only now, so the header goes with the next record if this one failed.
-        *csv_header_written = true;
-        Ok(PyBytes::new(py, &bytes).into_any().unbind())
+        // The header is the first line: column names have no line breaks.
+        let header_length = match row.iter().position(|&byte| byte == b'\n') {
+            Some(end) if with_header => end + 1,
+            _ => 0,
+        };
+        Ok(Step::YieldCsv { row, header_length })
     }
 }
 
@@ -446,7 +528,9 @@ impl PyMftDataStream {
 /// Parses an mft file.
 #[pymodule(gil_used = false)]
 fn mft(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    init_logging(m.py()).ok();
+    init_logging().ok();
+
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
 
     m.add_class::<PyMftParser>()?;
     m.add_class::<PyMftDataStream>()?;

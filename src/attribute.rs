@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use jiff::Timestamp;
 use mft_rs::attribute::MftAttributeContent;
@@ -24,6 +24,7 @@ use mft_rs::attribute::FileAttributeFlags;
 use mft_rs::attribute::x20::{AttributeListAttr, AttributeListEntry};
 use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
+use pyo3::types::PyString;
 
 use crate::err::PyMftError;
 use crate::utils::date_to_pyobject;
@@ -93,6 +94,15 @@ impl PyMftAttribute {
 
 #[pymethods]
 impl PyMftAttribute {
+    fn __repr__(&self, py: Python) -> PyResult<String> {
+        Ok(format!(
+            "<PyMftAttribute type_name={} name={} is_resident={}>",
+            PyString::new(py, &self.type_name).repr()?,
+            PyString::new(py, &self.name).repr()?,
+            if self.is_resident { "True" } else { "False" }
+        ))
+    }
+
     /// The value of a resident attribute as stored in the record, or `None` for a non-resident
     /// one. Parsed classes don't keep every byte (reserved fields, slack after names), so this
     /// is how to get them.
@@ -301,19 +311,23 @@ pub struct PyMftAttributeX20 {
     entries: Vec<Py<PyMftAttributeX20Entry>>,
 }
 
-#[pyclass(module = "mft")]
+/// Threads can share an iterator: each entry goes to one of them.
+#[pyclass(frozen, module = "mft")]
 pub struct PyMftX20EntriesIter {
-    inner: std::vec::IntoIter<Py<PyMftAttributeX20Entry>>,
+    inner: Mutex<std::vec::IntoIter<Py<PyMftAttributeX20Entry>>>,
 }
 
 #[pymethods]
 impl PyMftX20EntriesIter {
-    fn __iter__(slf: PyRefMut<Self>) -> PyResult<Py<Self>> {
-        Ok(slf.into())
+    fn __iter__(slf: PyRef<Self>) -> Py<Self> {
+        slf.into()
     }
 
-    fn __next__(&mut self) -> Option<Py<PyMftAttributeX20Entry>> {
-        self.inner.next()
+    fn __next__(&self) -> Option<Py<PyMftAttributeX20Entry>> {
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .next()
     }
 }
 
@@ -339,7 +353,7 @@ impl PyMftAttributeX20 {
         Py::new(
             py,
             PyMftX20EntriesIter {
-                inner: entries.into_iter(),
+                inner: Mutex::new(entries.into_iter()),
             },
         )
     }

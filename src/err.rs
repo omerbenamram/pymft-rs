@@ -1,9 +1,10 @@
-use std::ffi::CString;
 use std::fmt;
 
 use pyo3::exceptions::PyRuntimeWarning;
 use pyo3::prelude::*;
 use pyo3::{PyErr, exceptions};
+
+use crate::utils::warn;
 
 pub struct PyMftError(pub mft_rs::err::Error);
 
@@ -29,9 +30,7 @@ pub(crate) fn skip_or_raise(
     if !skip_errors {
         return Err(error);
     }
-    // A warning's message can't hold a NUL.
-    let message = format!("Skipping {what}: {error}").replace('\0', "\\0");
-    let message = CString::new(message).expect("NULs were escaped");
-    PyErr::warn(py, &py.get_type::<PyRuntimeWarning>(), &message, 1)
+    let message = format!("Skipping {what}: {error}");
+    warn(py, &py.get_type::<PyRuntimeWarning>(), message)
         .inspect_err(|warning| warning.set_cause(py, Some(error)))
 }
