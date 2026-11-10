@@ -4,6 +4,14 @@
 requires = ["maturin>=1.15,<2.0"]
 build-backend = "maturin"
 
+[tool.maturin]
+# Instructions for AI agents, not part of the package.
+exclude = [
+    { path = ".claude/**", format = "sdist" },
+    { path = "AGENTS.md", format = "sdist" },
+    { path = "CLAUDE.md", format = "sdist" },
+]
+
 [project]
 name = "mft"
 description = "Python bindings for https://github.com/omerbenamram/mft"
