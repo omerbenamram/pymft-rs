@@ -85,9 +85,11 @@ class PyMftEntry:
     total_entry_size: int
     full_path: str
     file_size: int
-    """The size of the unnamed `$DATA` stream, or of a named one if there is none, including
-    when an extension record holds it. 0 without a `$DATA` attribute. The same as `FileSize`
-    in `entries_csv()`."""
+    """The size of the unnamed `$DATA` stream, or of a named one if there is none, also when
+    an extension record holds it. 0 without a `$DATA` attribute. The same as `FileSize` in
+    `entries_csv()`, except for a file whose `$ATTRIBUTE_LIST` is non-resident or fails to
+    parse: only the base record is looked at then, as finding the file's other records takes
+    reading the whole MFT."""
     def attributes(self) -> PyMftAttributesIter: ...
 
 @final

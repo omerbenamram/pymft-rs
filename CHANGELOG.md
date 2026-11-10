@@ -16,6 +16,9 @@ and this project adheres to
   two threads at once, through two parsers or otherwise: a seek and its read are two calls.
 - `PyMftEntry.file_size` is the size `entries_csv()` gives. It was 0 for a file whose `$DATA` is in
   an extension record, and the size of a named stream when one came before the unnamed stream.
+  A file whose `$ATTRIBUTE_LIST` is non-resident or fails to parse is the exception: its size
+  still comes from the base record alone, as finding its other records takes reading the whole
+  MFT.
 
 ## [0.10.1] - 2026-11-03
 
