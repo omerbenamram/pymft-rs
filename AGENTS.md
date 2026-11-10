@@ -44,7 +44,7 @@ Each fix or feature gets its own pull request, so that it can be reviewed, descr
 5. **CI.** Every check is green. Fix the cause of a red check. Do not skip, disable or loosen a test to get there.
 6. **Merge.** Merge the pull request yourself. Do not wait for Omer. The exception is a `chore(release)` pull request, which merges only when he tells you to.
 
-Open the pull request as soon as the change is built, so that CI and Bugbot run while you review. If a review did not run, say so in the pull request and leave it open.
+Before you push, run the checks in "This repository" that match what you changed. A change to these instruction files alone needs none. Open the pull request as soon as the change is built, so that CI and Bugbot run while you review. If a review did not run, say so in the pull request and leave it open.
 
 A cloud session cannot re-run or dispatch a GitHub Actions job: the API answers 403. When a job failed for a reason outside the change, such as a runner or a network fault, check whether `master` has moved since. If it has, merging it into the branch starts a new run. If it has not, tell Omer which job needs a re-run, and carry on with other work while you wait.
 
@@ -78,20 +78,20 @@ Use plain words and full sentences: short ones, one idea each, in the active voi
 
 ### Checks
 
-`.github/workflows/ci.yml` runs the first two on every pull request and on `master` as they are written here. It runs `pytest` against release wheels on Python 3.10 and free-threaded 3.14 on Linux, Windows and macOS, and the stub check on Python 3.10. `make test` and `make stubtest` are the local forms of those, on your own `python3`. Before you push, run the ones that match what you changed. A change to these instruction files alone needs none.
+`.github/workflows/ci.yml` runs these on every pull request and on `master`. It runs `pytest` against release wheels on Python 3.10 and free-threaded 3.14 on three platforms, and the stub check on Python 3.10; the `make` targets use your own `python3`.
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --locked --all-targets -- -D warnings`
-- `make test`. It creates `.venv` with `uv`, builds the extension with `maturin develop --release`, and runs `pytest`. One test in `tests/test_threading.py` is skipped on an interpreter that has the GIL. Run it with `VIRTUAL_ENV=$PWD/.venv-ft make test PYTHON=3.14t VENV=.venv-ft`.
-- `make stubtest`. It checks `mft.pyi` against the built module, with the exceptions in `tests/stubtest-allowlist.txt`. Update `mft.pyi` in the same pull request as an API change.
+- `make build-dev`, then `.venv/bin/python -m pytest -q`. This is one debug build; `make test` does the same with a release build, which CI already tests.
+- When you change the Python API or `mft.pyi`: `make stubtest`, which checks `mft.pyi` against the built module. Update `mft.pyi` in the same pull request as an API change.
+- When you change shared state, locking or module start-up: `VIRTUAL_ENV=$PWD/.venv-ft make test PYTHON=3.14t VENV=.venv-ft`. It runs the one test in `tests/test_threading.py` that is skipped on an interpreter with the GIL.
 - When you change `CHANGELOG.md` or `version` in `Cargo.toml`: `scripts/release-notes.sh <version in Cargo.toml>`. CI fails a pull request when the current version has no notes in `CHANGELOG.md`.
-
-CI builds with `--locked`, and `make test` does not, so a local build can change `Cargo.lock` without saying so. Commit `Cargo.lock` whenever the dependencies change. This crate is itself named `mft`, so `cargo update -p mft` is ambiguous. Name the registry package: `cargo update -p 'registry+https://github.com/rust-lang/crates.io-index#mft@<old version>'`.
 
 ### Code rules
 
 - The Python API is the contract. Mark a breaking change with **Breaking:** in `CHANGELOG.md`, and say what a caller must change.
-- The bindings build on the published `mft` crate. A change that needs unreleased `mft` code waits for an `mft` release, and a release waits for Omer.
+- The bindings build on the published `mft` crate. A change that needs unreleased `mft` code waits for an `mft` release.
+- CI builds with `--locked`, and the `make` targets do not, so a local build can change `Cargo.lock` without saying so. Commit `Cargo.lock` whenever the dependencies change. This crate is itself named `mft`, so `cargo update -p mft` is ambiguous. Name the registry package: `cargo update -p 'registry+https://github.com/rust-lang/crates.io-index#mft@<old version>'`.
 - The module runs on free-threaded Python. Keep it safe without the GIL, and keep `tests/test_threading.py` passing.
 - When `MFT_EXPECT_PYTHON` is set, as it is in CI, `build.rs` fails a build whose free-threaded flag does not match it. `scripts/check_wheel_abi.py` checks the tags of the built wheel. Keep both when you change the build.
 - Timestamps use `jiff`. Do not add `chrono`: Omer prefers `jiff`.
