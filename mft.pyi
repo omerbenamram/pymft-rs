@@ -17,11 +17,11 @@ class PyMftParser:
     A file-like object is read at the parser's own position: the parser seeks before every
     read of the object (entries read in order are fetched 64 KiB at a time, so up to that
     much ahead of the entry asked for). So the object can be used elsewhere between the
-    parser's calls, by another parser too. That only holds on one thread. A seek and its read are two calls on the object, so
-    if another thread uses the object at the same time (directly, or through a second
-    parser over it), the two can interleave and a read can return the bytes of another
-    record. Threads can share one parser, whose lock covers both calls; give each thread's
-    parser its own file object.
+    parser's calls, by another parser too. That only holds on one thread. A seek and its
+    read are two calls on the object, so if another thread uses the object at the same time
+    (directly, or through a second parser over it), the two can interleave and a read can
+    return the bytes of another record. Threads can share one parser, whose lock covers
+    both calls; give each thread's parser its own file object.
 
     Iterating over entries or attributes raises `RuntimeError` or `OSError` for one that
     fails to parse, after stepping past it, so `next()` can go on. With `skip_errors=True`
