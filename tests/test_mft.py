@@ -2,6 +2,8 @@ import csv
 import datetime
 import io
 import itertools
+import os
+import sys
 import threading
 
 import pytest
@@ -674,3 +676,70 @@ def test_a_parser_called_from_its_own_read_raises(sample_mft: Path):
     assert isinstance(source.raised, RuntimeError)
     assert "the parser is already in use by this thread" in str(source.raised)
     assert entries[0].entry_id == 200
+
+
+@pytest.mark.parametrize("as_path", [str, Path, os.fsencode], ids=["str", "Path", "bytes"])
+def test_path_types(sample_mft: Path, as_path):
+    assert PyMftParser(as_path(sample_mft)).get_entry(0).full_path == "$MFT"
+
+
+def test_path_like_object(sample_mft: Path):
+    class Located:
+        def __fspath__(self):
+            return os.fsencode(sample_mft)
+
+    assert PyMftParser(Located()).get_entry(0).full_path == "$MFT"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="needs file names that are any bytes")
+def test_path_that_is_not_utf8(sample_mft: Path, tmp_path: Path):
+    path = os.fsencode(tmp_path) + b"/mft_\xff.bin"
+    with open(path, "wb") as copy:
+        copy.write(sample_mft.read_bytes()[: 16 * ENTRY_SIZE])
+
+    # As `os.listdir()` and `sys.argv` give it, and as bytes.
+    for name in (os.fsdecode(path), Path(os.fsdecode(path)), path):
+        assert PyMftParser(name).number_of_entries() == 16
+
+
+def test_missing_file_raises(tmp_path: Path):
+    with pytest.raises(FileNotFoundError):
+        PyMftParser(tmp_path / "missing")
+
+
+def test_text_file_is_a_type_error(sample_mft: Path):
+    with open(sample_mft, encoding="latin-1") as text:
+        with pytest.raises(TypeError, match="binary mode"):
+            PyMftParser(text)
+    with pytest.raises(TypeError, match="binary mode"):
+        PyMftParser(io.StringIO("FILE"))
+
+
+@pytest.mark.parametrize("value", [5, None, 1.5, object(), bytearray(b"MFT")])
+def test_other_types_are_a_type_error(value):
+    with pytest.raises(TypeError, match="expected a path .* not " + type(value).__name__):
+        PyMftParser(value)
+
+
+def test_a_file_object_with_a_path_is_read_as_a_file_object(sample_mft: Path, tmp_path: Path):
+    # Like fsspec's `LocalFileOpener`, or a wrapper that decompresses: the object's `read` gives
+    # the content, which isn't what is on disk under its name.
+    class Opened(io.BytesIO):
+        def __fspath__(self):
+            return str(tmp_path / "compressed.gz")
+
+    (tmp_path / "compressed.gz").write_bytes(b"not an MFT")
+    parser = PyMftParser(Opened(sample_mft.read_bytes()[: 16 * ENTRY_SIZE]))
+    assert parser.number_of_entries() == 16
+    assert parser.get_entry(0).full_path == "$MFT"
+
+
+def test_a_path_like_with_only_read_is_a_path(sample_mft: Path):
+    class Located:
+        def __fspath__(self):
+            return str(sample_mft)
+
+        def read(self):
+            raise AssertionError("not a file object: it has no seek")
+
+    assert PyMftParser(Located()).get_entry(0).full_path == "$MFT"

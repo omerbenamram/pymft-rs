@@ -24,6 +24,9 @@ and this project adheres to
   got `RuntimeError: Already borrowed`.
 - A file-like object whose `read` or `seek` calls back into the parser or iterator that is reading
   it gets a `RuntimeError`. The parser waited for itself forever.
+- `PyMftParser` takes `os.PathLike` (`pathlib.Path`) and `bytes` paths, and paths that aren't
+  UTF-8. It raises a `TypeError` that says what it takes for anything else, and for a file opened
+  in text mode, which gave `OSError: buffer size must be at least 4 bytes`.
 
 ## [0.10.1] - 2026-11-03
 

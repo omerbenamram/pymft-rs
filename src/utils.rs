@@ -2,16 +2,17 @@ use log::{Level, Log, Metadata, Record, SetLoggerError};
 
 use jiff::tz::Offset;
 use mft_rs::Timestamp;
+use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyAnyMethods, PyString, PyStringMethods};
+use pyo3::types::{PyAnyMethods, PyBytes, PyString, PyTypeMethods};
 use pyo3_file::PyFileLikeObject;
 use std::io::{self, Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub enum FileOrFileLike {
-    File(String),
+    File(PathBuf),
     FileLike(PinnedFileLike),
 }
 
@@ -113,25 +114,41 @@ impl Seek for PinnedFileLike {
 }
 
 impl FileOrFileLike {
-    pub fn from_pyobject(path_or_file_like: Py<PyAny>) -> PyResult<FileOrFileLike> {
-        Python::attach(|py| {
-            // Is a path
-            let maybe_path: Option<String> = {
-                let bound = path_or_file_like.bind(py);
-                bound
-                    .cast::<PyString>()
-                    .ok()
-                    .map(|s| s.to_string_lossy().into_owned())
-            };
+    pub fn from_pyobject(path_or_file_like: &Bound<'_, PyAny>) -> PyResult<FileOrFileLike> {
+        let py = path_or_file_like.py();
 
-            if let Some(path) = maybe_path {
-                return Ok(FileOrFileLike::File(path));
+        // A file object first: one can have a path too (fsspec's `LocalFileOpener`, a wrapper
+        // that decompresses), and what its `read` gives isn't what is on disk under that name.
+        // `read` and `seek` are all that is used, so `PyFileLikeObject` has nothing more to check.
+        if path_or_file_like.hasattr("read")? && path_or_file_like.hasattr("seek")? {
+            // A text file would be read as its characters encoded back to UTF-8.
+            let text_io = py.import("io")?.getattr("TextIOBase")?;
+            if path_or_file_like.is_instance(&text_io)? {
+                return Err(PyTypeError::new_err(
+                    "expected a file opened in binary mode ('rb'), not a text file",
+                ));
             }
+            return PyFileLikeObject::py_new(path_or_file_like.clone())
+                .map(|file| FileOrFileLike::FileLike(PinnedFileLike::new(file)));
+        }
 
-            // We only need read + seek (no write, no fileno).
-            PyFileLikeObject::with_requirements(path_or_file_like, true, false, true, false)
-                .map(|file| FileOrFileLike::FileLike(PinnedFileLike::new(file)))
-        })
+        // A path: `str`, `bytes` or `os.PathLike`. `os.fsdecode` takes the three and decodes
+        // bytes the way Python does file names, so one that isn't UTF-8 is kept as it is.
+        if path_or_file_like.is_instance_of::<PyString>()
+            || path_or_file_like.is_instance_of::<PyBytes>()
+            || path_or_file_like.hasattr("__fspath__")?
+        {
+            let path = py
+                .import("os")?
+                .call_method1("fsdecode", (path_or_file_like,))?;
+            return Ok(FileOrFileLike::File(path.extract()?));
+        }
+
+        Err(PyTypeError::new_err(format!(
+            "expected a path (str, bytes or os.PathLike) or a binary file-like object with \
+             read() and seek(), not {}",
+            path_or_file_like.get_type().name()?
+        )))
     }
 }
 
