@@ -774,3 +774,50 @@ def test_a_warnings_hook_can_use_the_parser(mft_with_a_bad_fixup: io.BytesIO, mo
     assert not thread.is_alive(), "the warnings hook is waiting for the parser"
     # Once for `get_entry(3)`, and once when the iterator reads entry 3.
     assert seen == [("$MFT", 0), ("$MFT", 4)]
+
+
+def test_every_logged_warning_is_sent_when_one_is_an_error(sample_mft: Path):
+    # Both sectors of entry 3 fail their fixup check, which logs a warning each.
+    data = bytearray(sample_mft.read_bytes()[: 16 * ENTRY_SIZE])
+    data[3 * ENTRY_SIZE + 510] ^= 0xFF
+    data[3 * ENTRY_SIZE + 1022] ^= 0xFF
+    parser = PyMftParser(io.BytesIO(bytes(data)))
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        parser.get_entry(3)
+    assert ["stride_number: 0" in str(w.message) for w in caught] == [True, False]
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        warnings.filterwarnings("error", message=".*stride_number: 0")
+        with pytest.raises(UserWarning, match="stride_number: 0"):
+            parser.get_entry(3)
+    # The second one was still sent.
+    assert ["stride_number: 1" in str(w.message) for w in caught] == [True]
+
+
+@pytest.mark.filterwarnings("error::UserWarning")
+@pytest.mark.parametrize("bad_entry", [0, 1])
+def test_csv_header_survives_a_row_lost_to_a_warning(sample_mft: Path, bad_entry: int):
+    data = sample_mft.read_bytes()[: 16 * ENTRY_SIZE]
+    expected = list(PyMftParser(io.BytesIO(data)).entries_csv())
+    header, first_row = expected[0].splitlines(keepends=True)
+    expected[0] = first_row
+
+    data = bytearray(data)
+    data[bad_entry * ENTRY_SIZE + 510] ^= 0xFF
+    rows = PyMftParser(io.BytesIO(bytes(data))).entries_csv()
+    seen = []
+    for entry_id in range(16):
+        if entry_id == bad_entry:
+            with pytest.raises(UserWarning, match="fixup bytes are not equal"):
+                next(rows)
+        else:
+            seen.append(next(rows))
+
+    # The row of the entry that warned isn't returned. The header comes once, with the first row
+    # that is.
+    del expected[bad_entry]
+    expected[0] = header + expected[0]
+    assert seen == expected

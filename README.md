@@ -55,7 +55,7 @@ Pass `skip_errors=True` to skip them instead: each one skipped is reported as a 
 Failing to read the file raises either way, and so does reading an `attribute_content` that fails to parse.
 
 What the parser notices but reads anyway, such as a record whose fixup values don't match, is reported as a `UserWarning`.
-With a filter that turns it into an error (`-W error`), the call that read the record raises it.
+With a filter that turns it into an error (`-W error`), the call that read the record raises it and the entry is not returned: `get_entry` raises every time, and an iterator steps past the entry, as it does for one that fails to parse.
 
 ```python
 from mft import PyMftParser, PyMftAttributeX10, PyMftAttributeX30

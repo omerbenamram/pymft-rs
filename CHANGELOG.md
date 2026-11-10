@@ -30,7 +30,7 @@ and this project adheres to
 - The `UserWarning`s for what the parser notices but reads anyway (a record whose fixup values
   don't match) are sent once the parser is unlocked. A `warnings` hook that used the parser never
   returned. A filter that turns them into errors (`-W error`) now makes the call raise, where the
-  error was dropped.
+  error was dropped. The entry that warned is then not returned.
 
 ## [0.10.1] - 2026-11-03
 

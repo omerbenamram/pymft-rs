@@ -30,7 +30,7 @@ use crate::attribute::{
 use crate::entry::PyMftAttributesIter;
 use crate::err::{PyMftError, skip_or_raise};
 use crate::lock::{ReentryCheckedGuard, ReentryCheckedMutex};
-use crate::utils::{FileOrFileLike, init_logging, with_deferred_warnings};
+use crate::utils::{FileOrFileLike, deferring_warnings, init_logging, with_deferred_warnings};
 use csv::WriterBuilder;
 use pyo3::types::{PyBytes, PyString};
 
@@ -88,8 +88,9 @@ pub enum Output {
 /// error. Failing to read the file raises either way.
 ///
 /// What the parser notices but reads anyway, such as a record whose fixup values don't match, is
-/// reported as a `UserWarning`. If a `warnings` filter turns it into an error, the call that read
-/// the record raises it.
+/// reported as a `UserWarning`. If a `warnings` filter turns it into an error (`-W error`), the
+/// call that read the record raises it and doesn't return the entry: `get_entry` raises every
+/// time, and an iterator steps past the entry, as for one that fails to parse.
 pub struct PyMftParser {
     inner: SharedParser,
     /// Fixed once the parser is built, so reading it doesn't need the lock.
@@ -243,8 +244,22 @@ impl PyMftEntriesIterator {
     fn __next__(&self, py: Python) -> PyResult<Option<Py<PyAny>>> {
         loop {
             // Unlocked while warning, as a `warnings` hook may use the parser or this iterator.
-            match with_deferred_warnings(py, || self.next_entry(py))? {
-                Step::Yield(item) => return Ok(item),
+            let (step, warned) = deferring_warnings(py, || self.next_entry(py));
+            let step = step?;
+            if let Err(error) = warned {
+                // The entry that warned isn't returned. If its row had the CSV header, the next
+                // row gets it.
+                if let Step::Yield {
+                    with_csv_header: true,
+                    ..
+                } = step
+                {
+                    self.state.lock(py, "the iterator")?.csv_header_written = false;
+                }
+                return Err(error);
+            }
+            match step {
+                Step::Yield { item, .. } => return Ok(item),
                 Step::Failed(id, error) => {
                     skip_or_raise(py, self.skip_errors, format_args!("entry {id}"), error)?
                 }
@@ -255,8 +270,12 @@ impl PyMftEntriesIterator {
 
 /// What reading the next entry came to, once the locks are released.
 enum Step {
-    /// The entry in the iterator's format, or `None` at the end.
-    Yield(Option<Py<PyAny>>),
+    Yield {
+        /// The entry in the iterator's format, or `None` at the end.
+        item: Option<Py<PyAny>>,
+        /// Whether `item` is the CSV row that starts with the header.
+        with_csv_header: bool,
+    },
     /// The entry with this number failed to parse.
     Failed(u64, mft_rs::err::Error),
 }
@@ -279,6 +298,8 @@ impl PyMftEntriesIterator {
                 }
                 Err(error) => return Ok(Step::Failed(id, error)),
             };
+            let with_csv_header =
+                matches!(self.output_format, Output::CSV) && !state.csv_header_written;
             return match self.output_format {
                 Output::Python => {
                     PyMftEntry::from_mft_entry(py, entry, &mut parser, self.skip_errors)
@@ -289,9 +310,15 @@ impl PyMftEntriesIterator {
                     Self::entry_to_csv(&mut state.csv_header_written, &mut parser, entry, py)
                 }
             }
-            .map(|item| Step::Yield(Some(item)));
+            .map(|item| Step::Yield {
+                item: Some(item),
+                with_csv_header,
+            });
         }
-        Ok(Step::Yield(None))
+        Ok(Step::Yield {
+            item: None,
+            with_csv_header: false,
+        })
     }
 
     fn entry_to_json(entry: MftEntry, py: Python) -> PyResult<Py<PyAny>> {

@@ -117,10 +117,15 @@ impl Drop for DeferredWarningsScope {
 }
 
 /// Runs `f`, which locks the parser, and only then sends the warnings the `mft` crate logged in
-/// it to `warnings.warn`, which runs Python code: a `warnings` hook that uses the parser would
-/// wait for the lock forever. If a `warnings` filter turns one into an error, it is raised in
-/// place of the value of `f`. An error of `f` comes first.
-pub fn with_deferred_warnings<T>(py: Python<'_>, f: impl FnOnce() -> PyResult<T>) -> PyResult<T> {
+/// it to `warnings.warn`, which runs Python code: a `warnings` hook must be able to use the
+/// parser. Every warning is sent, whatever `f` and the ones before it came to.
+///
+/// Returns the result of `f`, and the error of the first warning that a `warnings` filter turned
+/// into one.
+pub fn deferring_warnings<T>(
+    py: Python<'_>,
+    f: impl FnOnce() -> PyResult<T>,
+) -> (PyResult<T>, PyResult<()>) {
     let (result, messages) = {
         // Calls nest when a file-like object's `read` uses another parser.
         let _scope = DeferredWarningsScope(DEFERRED_WARNINGS.replace(Some(Vec::new())));
@@ -128,23 +133,23 @@ pub fn with_deferred_warnings<T>(py: Python<'_>, f: impl FnOnce() -> PyResult<T>
         (result, DEFERRED_WARNINGS.take().unwrap_or_default())
     };
     let category = py.get_type::<PyUserWarning>();
-    match result {
-        Ok(value) => {
-            for message in messages {
-                warn(py, &category, message)?;
-            }
-            Ok(value)
-        }
-        Err(error) => {
-            // Still shown, but only the error of `f` is raised.
-            for message in messages {
-                if warn(py, &category, message).is_err() {
-                    break;
-                }
-            }
-            Err(error)
+    let mut warned = Ok(());
+    for message in messages {
+        let sent = warn(py, &category, message);
+        if warned.is_ok() {
+            warned = sent;
         }
     }
+    (result, warned)
+}
+
+/// [`deferring_warnings`], raising the error of `f`, or else of a warning in place of the value
+/// of `f`.
+pub fn with_deferred_warnings<T>(py: Python<'_>, f: impl FnOnce() -> PyResult<T>) -> PyResult<T> {
+    let (result, warned) = deferring_warnings(py, f);
+    let value = result?;
+    warned?;
+    Ok(value)
 }
 
 /// `warnings.warn(message, category)`, which raises if a `warnings` filter says so.
