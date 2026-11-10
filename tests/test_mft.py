@@ -492,3 +492,23 @@ def test_two_parsers_can_share_a_file_object(sample_mft: Path):
 
     assert entry_summaries(a for a, _ in pairs) == expected
     assert entry_summaries(b for _, b in pairs) == expected
+
+
+def test_moving_the_file_object_does_not_move_the_parser_between_fetches(sample_mft: Path):
+    # The file object is read 64 KiB at a time. 200 entries take four fetches, each with the
+    # object's position somewhere else.
+    expected = entry_summaries(itertools.islice(PyMftParser(str(sample_mft)).entries(), 200))
+
+    with open(sample_mft, "rb") as m:
+        entries = PyMftParser(m).entries()
+        seen = []
+        for number in range(200):
+            seen.append(next(entries))
+            m.seek((number * 7919) % (300 * ENTRY_SIZE))
+            m.read(10)
+        # Back in an earlier window, and on in a later one.
+        parser = PyMftParser(m)
+        m.seek(123)
+        assert [parser.get_entry(n).entry_id for n in (190, 3, 70, 500, 4)] == [190, 3, 70, 500, 4]
+
+    assert entry_summaries(seen) == expected
