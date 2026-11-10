@@ -4,6 +4,7 @@ import io
 import itertools
 import os
 import sys
+import threading
 
 import pytest
 
@@ -519,6 +520,132 @@ def test_file_size_matches_csv(sample_mft: Path):
     rows = csv.DictReader(io.StringIO(b"".join(parser.entries_csv()).decode()))
     sizes = {int(row["EntryId"]): int(row["FileSize"]) for row in rows}
     assert sizes == {entry.entry_id: entry.file_size for entry in parser.entries()}
+
+
+def attribute_offset(data: bytes, entry_id: int, type_code: int) -> int:
+    """Where the first attribute of this type starts in an entry's record."""
+    record = entry_id * ENTRY_SIZE
+    offset = record + int.from_bytes(data[record + 0x14 : record + 0x16], "little")
+    while int.from_bytes(data[offset : offset + 4], "little") != type_code:
+        offset += int.from_bytes(data[offset + 4 : offset + 8], "little")
+    return offset
+
+
+class CountingReads(io.BytesIO):
+    reads = 0
+
+    def read(self, size=-1):
+        self.reads += 1
+        return super().read(size)
+
+
+def test_file_size_reads_no_more_than_it_needs(sample_mft: Path):
+    source = CountingReads(sample_mft.read_bytes())
+    parser = PyMftParser(source)
+
+    def reads_of(entry_id: int) -> int:
+        # Once before, to have the directories of its path cached.
+        parser.get_entry(entry_id)
+        before = source.reads
+        parser.get_entry(entry_id)
+        return source.reads - before
+
+    # No $ATTRIBUTE_LIST: the record itself.
+    assert parser.get_entry(209).file_size == 231
+    assert reads_of(209) == 1
+
+    # An $ATTRIBUTE_LIST that names a $DATA in another record: that record too.
+    assert parser.get_entry(3498).file_size == 1024
+    assert reads_of(3498) == 2
+
+
+def test_file_size_does_not_scan_the_mft(sample_mft: Path):
+    # An $ATTRIBUTE_LIST that fails to parse doesn't say where the file's other records are
+    # (nor does a non-resident one, which is outside the MFT). Finding them takes reading every
+    # record, which `entries_csv()` does once and `file_size` doesn't: it is the base record's.
+    data = bytearray(sample_mft.read_bytes())
+    attribute_list = attribute_offset(data, 3498, 0x20)
+    value = attribute_list + int.from_bytes(
+        data[attribute_list + 0x14 : attribute_list + 0x16], "little"
+    )
+    data[value + 4 : value + 6] = b"\0\0"  # The first entry's length.
+
+    source = CountingReads(bytes(data))
+    parser = PyMftParser(source)
+    parser.get_entry(3498)
+    before = source.reads
+    entry = parser.get_entry(3498)
+    assert source.reads - before == 1
+    assert entry.file_size == 0
+
+    rows = csv.DictReader(io.StringIO(b"".join(parser.entries_csv()).decode()))
+    assert {int(row["EntryId"]): row["FileSize"] for row in rows}[3498] == "1024"
+
+
+def test_file_size_leaves_out_data_that_fails_to_parse(sample_mft: Path):
+    # Entry 209 has one $DATA, resident. Its value now ends past the record, so the CSV has no
+    # $DATA to take a size from.
+    data = bytearray(sample_mft.read_bytes()[: 256 * ENTRY_SIZE])
+    offset = attribute_offset(data, 209, 0x80)
+    data[offset + 0x10 : offset + 0x14] = (5000).to_bytes(4, "little")
+
+    parser = PyMftParser(io.BytesIO(bytes(data)))
+    rows = csv.DictReader(io.StringIO(b"".join(parser.entries_csv()).decode()))
+    assert {int(row["EntryId"]): row["FileSize"] for row in rows}[209] == "0"
+    assert parser.get_entry(209).file_size == 0
+
+
+class CallsBack(io.BytesIO):
+    """A file object whose next `read` calls `callback` first, keeping what that raises."""
+
+    callback = None
+    raised = None
+
+    def read(self, size=-1):
+        callback, self.callback = self.callback, None
+        if callback is not None:
+            try:
+                callback()
+            except Exception as error:
+                self.raised = error
+        return super().read(size)
+
+
+def run_or_fail(function):
+    """Runs on a thread, so that a call that waits for itself fails the test instead."""
+    thread = threading.Thread(target=function, daemon=True)
+    thread.start()
+    thread.join(timeout=30)
+    assert not thread.is_alive(), "still waiting"
+
+
+@pytest.mark.parametrize("method", ["entries", "entries_json", "entries_csv"])
+def test_an_iterator_called_from_its_own_read_raises(sample_mft: Path, method: str):
+    source = CallsBack(sample_mft.read_bytes()[: 16 * ENTRY_SIZE])
+    entries = getattr(PyMftParser(source), method)()
+    next(entries)
+
+    source.callback = lambda: next(entries)
+    seen = []
+    run_or_fail(lambda: seen.extend(entries))
+
+    assert isinstance(source.raised, RuntimeError)
+    assert "the iterator is already in use by this thread" in str(source.raised)
+    # The call that was running went on.
+    assert len(seen) == 15
+
+
+def test_a_parser_called_from_its_own_read_raises(sample_mft: Path):
+    source = CallsBack(sample_mft.read_bytes()[: 16 * ENTRY_SIZE])
+    parser = PyMftParser(source)
+
+    source.callback = lambda: parser.get_entry(0)
+    entries = []
+    run_or_fail(lambda: entries.append(parser.get_entry(3)))
+
+    assert isinstance(source.raised, RuntimeError)
+    assert "the parser is already in use by this thread" in str(source.raised)
+    assert entries[0].entry_id == 3
 
 
 @pytest.mark.parametrize("as_path", [str, Path, os.fsencode], ids=["str", "Path", "bytes"])
