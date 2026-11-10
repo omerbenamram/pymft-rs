@@ -5,6 +5,10 @@ PYTHON ?= python3
 UV ?= uv
 
 PY := $(VENV)/bin/python
+# maturin installs into the environment that VIRTUAL_ENV names, or else into `.venv`, so
+# without this any other VENV is ignored. It refuses to choose when a conda environment is
+# active as well. `--locked` keeps Cargo.lock as committed, as CI does.
+MATURIN_DEVELOP = env -u CONDA_PREFIX VIRTUAL_ENV="$$(cd $(VENV) && pwd)" $(VENV)/bin/maturin develop --locked
 
 help:
 	@echo "Targets:"
@@ -25,10 +29,10 @@ deps: venv
 	$(UV) pip install --python $(PY) -U "maturin>=1.15,<2.0" pytest mypy typing_extensions
 
 build: deps
-	$(VENV)/bin/maturin develop --release
+	$(MATURIN_DEVELOP) --release
 
 build-dev: deps
-	$(VENV)/bin/maturin develop
+	$(MATURIN_DEVELOP)
 
 test: build
 	$(PY) -m pytest -q
