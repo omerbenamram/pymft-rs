@@ -8,6 +8,19 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `mft.__version__`.
+- `repr()` of a `PyMftParser`, `PyMftEntry` or `PyMftAttribute` says what it holds.
+- `PyMftEntry` objects are equal, and hash alike, when they have the same number, record bytes and
+  path. Two reads of one entry were different dictionary keys.
+
+### Changed
+
+- `PyMftParser` is no longer an `Iterator` to `isinstance`: its `__next__`, which only raised
+  `NotImplementedError`, is gone. `next(parser)` raises `TypeError`. Iterating over the parser
+  works as before.
+
 ### Fixed
 
 - A parser over a file-like object seeks before every read. Moving the object's position between
@@ -25,6 +38,10 @@ and this project adheres to
   don't match) are sent once the parser is unlocked. A `warnings` hook that used the parser never
   returned. A filter that turns them into errors (`-W error`) now makes the call raise, where the
   error was dropped.
+- `get_entry()` raises `IndexError` for any integer that is out of range, as documented. One that
+  doesn't fit in 64 bits raised `OverflowError`.
+- The stubs declare the classes' attributes as read-only properties, which they are.
+- Removed the PyPy classifier: no PyPy wheels are built or tested.
 
 ## [0.10.1] - 2026-11-03
 

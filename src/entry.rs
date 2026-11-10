@@ -1,7 +1,9 @@
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::ReadSeek;
 use pyo3::prelude::*;
+use pyo3::types::PyString;
 
 use crate::attribute::PyMftAttribute;
 use crate::err::skip_or_raise;
@@ -46,6 +48,10 @@ pub struct PyMftEntry {
     pub used_entry_size: u32,
     #[pyo3(get)]
     pub total_entry_size: u32,
+    /// The path from the volume's root, with `\\` between names. `[UNKNOWN]` for a base record
+    /// without a `$FILE_NAME` (where `entries_csv()` has an empty `FullPath`). A path can also
+    /// start with a name that the mft crate gives: `[Orphaned]` when the parent directory is
+    /// gone, `[Unknown]` when the parent's record isn't a directory.
     #[pyo3(get)]
     pub full_path: String,
     /// The size of the unnamed `$DATA` stream, or of a named one if there is none, wherever the
@@ -77,6 +83,29 @@ impl PyMftEntry {
                 inner: Mutex::new(attributes.into_iter().enumerate()),
             },
         )
+    }
+
+    fn __repr__(&self, py: Python) -> PyResult<String> {
+        Ok(format!(
+            "<PyMftEntry entry_id={} sequence={} full_path={}>",
+            self.entry_id,
+            self.sequence,
+            PyString::new(py, &self.full_path).repr()?
+        ))
+    }
+
+    /// Entries are equal when they have the same number, record bytes and path, whichever
+    /// parser or call they came from.
+    fn __eq__(&self, other: PyRef<Self>) -> bool {
+        self.entry_id == other.entry_id
+            && self.full_path == other.full_path
+            && self.inner.data == other.inner.data
+    }
+
+    fn __hash__(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        (self.entry_id, self.sequence, self.lsn).hash(&mut hasher);
+        hasher.finish()
     }
 }
 

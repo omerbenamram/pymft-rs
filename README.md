@@ -44,6 +44,8 @@ Run `pip install -e .`
 
 A parser can be iterated more than once, and `parser.get_entry(5)` reads a single entry by number.
 
+`entry.full_path` is `[UNKNOWN]` for a record without a `$FILE_NAME` attribute, where `entries_csv()` has an empty `FullPath`.
+
 Iterating raises the `RuntimeError` or `OSError` of an entry or attribute that fails to parse, after stepping past it.
 Pass `skip_errors=True` to skip them instead: each one skipped is reported as a `RuntimeWarning`, which
 [`warnings` filters](https://docs.python.org/3/library/warnings.html#the-warnings-filter) can count, log or turn back into errors.

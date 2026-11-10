@@ -1,5 +1,7 @@
+import collections.abc
 import csv
 import datetime
+import importlib.metadata
 import io
 import itertools
 import os
@@ -11,6 +13,7 @@ import pytest
 
 from pathlib import Path
 
+import mft
 from mft import PyMftParser, PyMftEntry
 
 ENTRY_SIZE = 1024
@@ -624,3 +627,76 @@ def test_a_warnings_hook_can_use_the_parser(mft_with_a_bad_fixup: io.BytesIO, mo
     assert not thread.is_alive(), "the warnings hook is waiting for the parser"
     # Once for `get_entry(3)`, and once when the iterator reads entry 3.
     assert seen == [("$MFT", 0), ("$MFT", 4)]
+
+
+@pytest.mark.parametrize("entry_id", [2**63, 2**64, -(2**63) - 1])
+def test_get_entry_with_a_huge_number_is_an_index_error(sample_mft: Path, entry_id: int):
+    with pytest.raises(IndexError, match="out of range"):
+        PyMftParser(str(sample_mft)).get_entry(entry_id)
+
+
+@pytest.mark.parametrize("entry_id", [1.0, "1", None])
+def test_get_entry_needs_an_integer(sample_mft: Path, entry_id):
+    with pytest.raises(TypeError):
+        PyMftParser(str(sample_mft)).get_entry(entry_id)
+
+
+def test_parser_is_iterable_not_an_iterator(sample_mft: Path):
+    parser = PyMftParser(str(sample_mft))
+    assert isinstance(parser, collections.abc.Iterable)
+    assert not isinstance(parser, collections.abc.Iterator)
+    with pytest.raises(TypeError, match="not an iterator"):
+        next(parser)
+    assert next(iter(parser)).entry_id == 0
+
+
+def test_reprs(sample_mft: Path):
+    parser = PyMftParser(str(sample_mft), skip_errors=True)
+    assert repr(parser) == "<PyMftParser number_of_entries=13088 skip_errors=True>"
+    entry = parser.get_entry(11)
+    assert repr(entry) == "<PyMftEntry entry_id=11 sequence=11 full_path='$Extend'>"
+    assert [repr(a) for a in entry.attributes()][1:3] == [
+        "<PyMftAttribute type_name='FileName' name='' is_resident=True>",
+        "<PyMftAttribute type_name='IndexRoot' name='$I30' is_resident=True>",
+    ]
+
+
+def test_entries_compare_by_record(sample_mft: Path):
+    parser = PyMftParser(str(sample_mft))
+    entry = parser.get_entry(5)
+    with open(sample_mft, "rb") as m:
+        same = [parser.get_entry(5), next(itertools.islice(parser.entries(), 5, None)),
+                PyMftParser(m).get_entry(5)]
+    for other in same:
+        assert other is not entry
+        assert other == entry
+        assert hash(other) == hash(entry)
+    assert entry != parser.get_entry(6)
+    assert entry != 5
+    assert len({entry, *same, parser.get_entry(6)}) == 2
+
+    # The same number, after the record changed.
+    data = bytearray(sample_mft.read_bytes()[: 16 * ENTRY_SIZE])
+    data[5 * ENTRY_SIZE + 8] ^= 0xFF  # In the $LogFile sequence number.
+    assert PyMftParser(io.BytesIO(bytes(data))).get_entry(5) != entry
+
+
+def test_attributes_are_read_only(sample_mft: Path):
+    entry = entry_by_id(sample_mft, 5)
+    with pytest.raises(AttributeError):
+        entry.entry_id = 6
+    with pytest.raises(AttributeError):
+        next(entry.attributes()).name = "x"
+
+
+def test_version():
+    assert mft.__version__ == importlib.metadata.version("mft")
+
+
+def test_full_path_of_a_record_without_a_name(sample_mft: Path):
+    # A base record without a $FILE_NAME: `[UNKNOWN]` here, an empty FullPath in the CSV.
+    parser = PyMftParser(str(sample_mft))
+    rows = csv.DictReader(io.StringIO(b"".join(parser.entries_csv()).decode()))
+    unnamed = [int(row["EntryId"]) for row in rows if row["FullPath"] == ""]
+    assert unnamed
+    assert {parser.get_entry(n).full_path for n in unnamed} == {"[UNKNOWN]"}
