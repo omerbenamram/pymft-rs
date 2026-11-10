@@ -53,7 +53,8 @@ class PyMftEntriesIterator:
     """Yields `PyMftEntry` objects from `entries()`, `str` from `entries_json()` and
     `bytes` from `entries_csv()`.
 
-    Each iterator has its own position.
+    Each iterator has its own position. Threads can share an iterator: each entry goes to
+    one of them.
     """
 
     def __iter__(self) -> Self: ...

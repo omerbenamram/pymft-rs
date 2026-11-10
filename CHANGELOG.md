@@ -15,6 +15,9 @@ and this project adheres to
   return other records under the wrong `entry_id`.
 - `PyMftEntry.file_size` is the size `entries_csv()` gives. It was 0 for a file whose `$DATA` is in
   an extension record, and the size of a named stream when one came before the unnamed stream.
+- Threads can share an iterator (`entries()`, `entries_json()`, `entries_csv()`, `attributes()`,
+  `PyMftAttributeX20.entries()`): each item goes to one of them. A second thread calling `next()`
+  got `RuntimeError: Already borrowed`.
 
 ## [0.10.1] - 2026-11-03
 

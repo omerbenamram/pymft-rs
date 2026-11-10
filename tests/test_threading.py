@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import sysconfig
+import threading
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,50 @@ def test_threads_can_share_a_parser():
 
     assert all(ids == results[0] for ids in results)
     assert len(results[0]) == 2000
+
+
+def drain_from_threads(iterator, threads=4):
+    def drain(_):
+        return list(iterator)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as pool:
+        return list(itertools.chain.from_iterable(pool.map(drain, range(threads), timeout=60)))
+
+
+@pytest.mark.parametrize("method", ["entries", "entries_json", "entries_csv"])
+def test_threads_can_share_an_iterator(method):
+    expected = list(getattr(PyMftParser(str(SAMPLE)), method)())
+    if method == "entries":
+        expected = [e.entry_id for e in expected]
+
+    # Unbuffered, so every entry is a `read` call that lets another thread run.
+    with open(SAMPLE, "rb", buffering=0) as f:
+        seen = drain_from_threads(getattr(PyMftParser(f), method)())
+
+    # Each entry goes to one thread. The CSV header goes with the first entry, whichever thread
+    # reads it.
+    if method == "entries":
+        seen = [e.entry_id for e in seen]
+    assert sorted(seen) == sorted(expected)
+
+
+def test_threads_can_share_attribute_iterators():
+    # These never wait, so only free-threaded builds can have two threads in one at once.
+    parser = PyMftParser(str(SAMPLE))
+    entries = list(itertools.islice(parser.entries(), 3000))
+    iterators = [entry.attributes() for entry in entries]
+    start = threading.Barrier(4)
+
+    def drain(_):
+        start.wait(timeout=10)
+        return [[a.type_code for a in iterator] for iterator in iterators]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        seen = list(pool.map(drain, range(4), timeout=60))
+
+    for entry, *parts in zip(entries, *seen):
+        expected = [a.type_code for a in entry.attributes()]
+        assert sorted(itertools.chain.from_iterable(parts)) == sorted(expected)
 
 
 @pytest.mark.skipif(
