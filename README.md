@@ -9,6 +9,8 @@ Read an NTFS Master File Table (`$MFT`) from Python. These are the Python bindin
 pip install mft
 ```
 
+This example reads [`samples/MFT`](https://github.com/omerbenamram/pymft-rs/tree/master/samples) from this repository. Give it the path of your own `$MFT` instead.
+
 ```python
 from mft import PyMftParser, PyMftAttributeX10, PyMftAttributeX30
 
@@ -16,10 +18,10 @@ parser = PyMftParser("samples/MFT")
 
 # Deleted executables that are still in the table.
 for entry in parser.entries():
-    if not entry.is_allocated and entry.full_path.endswith(".exe"):
+    if not entry.is_allocated and entry.full_path.lower().endswith(".exe"):
         print(entry.entry_id, entry.file_size, entry.full_path)
 
-# The timestamps and names of one of them.
+# The timestamps and names of the one it found.
 entry = parser.get_entry(12938)
 for attribute in entry.attributes():
     content = attribute.attribute_content
@@ -40,10 +42,16 @@ name     winzip120[1].exe
 
 ## What you get
 
-- `parser.entries()` yields a `PyMftEntry` for each record: `entry_id`, `full_path`, `file_size`, `is_allocated`, `is_dir`, `flags` and more. `parser.get_entry(5)` reads one record by number. A parser can be iterated more than once.
-- `entry.attributes()` yields the record's attributes. `attribute.attribute_content` is a `PyMftAttributeX10` for `$STANDARD_INFORMATION`, a `PyMftAttributeX30` for `$FILE_NAME`, and so on. An attribute type without a class of its own is a `PyMftAttributeOther` with the raw value. Timestamps are timezone-aware `datetime` objects in UTC.
-- `parser.entries_csv()` and `parser.entries_json()` yield the rows that `mft_dump -o csv` and `mft_dump -o jsonl` write, for when you want every record and not Python objects.
-- `entry.full_path` is `[UNKNOWN]` for a record without a `$FILE_NAME` attribute, where `entries_csv()` has an empty `FullPath`. A path that starts with `[Orphaned]` is that of a file whose parent folder's record has been reused.
+- `parser.entries()` yields a `PyMftEntry` for each record: `entry_id`, `full_path`, `file_size`, `is_allocated`, `is_dir`, `flags` and more. `parser.get_entry(5)` reads one record by number.
+- `entry.attributes()` yields the record's attributes. `attribute.attribute_content` is a `PyMftAttributeX10` for `$STANDARD_INFORMATION`, a `PyMftAttributeX30` for `$FILE_NAME`, and so on. Timestamps are timezone-aware `datetime` objects in UTC.
+- `parser.entries_csv()` and `parser.entries_json()` give every record as text and not as Python objects: the output of `mft_dump -o csv`, and the records of `mft_dump -o jsonl`.
+
+Things that will surprise you otherwise:
+
+- A record that is all zeros is left out of `entries()`, which can therefore yield fewer than `parser.number_of_entries()`, and is `None` from `get_entry`.
+- An attribute stored out on the disk, as the `$DATA` of most files is, is a `PyMftAttributeNonResident` whatever its type. An attribute type without a class of its own is a `PyMftAttributeOther` with the raw value.
+- `entries_csv()` yields `bytes`, and its first item holds the header line and the first row. `entries_json()` yields one `str` per record, without the `full_path` key that `mft_dump` adds.
+- `entry.full_path` is `[UNKNOWN]` for a record without a `$FILE_NAME` attribute. It starts with `[Orphaned]` when the file's parent folder is gone, and with `[Unknown]` when the parent record is not a folder.
 
 The package ships type stubs (`mft.pyi`), so an editor shows every class and attribute.
 
@@ -72,18 +80,16 @@ So the deleted `winzip120[1].exe` above came from the internet zone.
 
 Real `$MFT`s have damaged records, so decide what should happen when the parser meets one.
 
-- By default, iterating raises the `RuntimeError` or `OSError` of an entry or attribute that fails to parse, after stepping past it. A `for` loop ends there. If you catch the error and call `next()` again, the iterator goes on with the next entry.
-- With `PyMftParser(path, skip_errors=True)` each such entry is skipped and reported as a `RuntimeWarning`. [`warnings` filters](https://docs.python.org/3/library/warnings.html#the-warnings-filter) can count them, log them or turn them back into errors.
+- By default, an entry or attribute that fails to parse raises `RuntimeError` or `OSError`. A `for` loop ends there. If you catch the error and call `next()` again, the iterator goes on with the next entry.
+- With `PyMftParser(path, skip_errors=True)` each such entry or attribute is skipped and reported as a `RuntimeWarning`. An entry with a skipped attribute is still returned, with its other attributes. [`warnings` filters](https://docs.python.org/3/library/warnings.html#the-warnings-filter) can count them, log them or turn them back into errors.
 - Failing to read the file raises either way, and so does reading an `attribute_content` that fails to parse.
-- What the parser notices but reads anyway, such as a record whose fixup values don't match, is reported as a `UserWarning`. With a filter that turns it into an error (`-W error`), the call that read the record raises it and the entry is not returned: `get_entry` raises every time, and an iterator steps past the entry, as it does for one that fails to parse.
+- What the parser notices but reads anyway, such as a record whose fixup values don't match, is a `UserWarning`, and the entry is still returned. If a filter turns that warning into an error (`-W error`), the entry is not returned.
 
 ## Paths and file objects
 
 `PyMftParser` takes a path (`str`, `bytes` or `os.PathLike`, such as `pathlib.Path`) or a file-like object opened in binary mode. An object with `read` and `seek` is read as a file object, also when it is an `os.PathLike`.
 
-A parser over a file object seeks before every read. Entries read in order are fetched 64 KiB at a time, so up to that much ahead of the entry asked for. On one thread this means the object can be used elsewhere between the parser's calls, by a second parser too.
-
-It does not make one file object safe to use from two threads at once. A seek and its read are two calls, so two parsers over one file object (or a parser and your own reads) on different threads can interleave them, and a parser can then return the bytes of another record. Share one parser between the threads, or give each parser its own file object.
+A parser seeks before every read, so on one thread the file object can be used elsewhere between the parser's calls, by a second parser too. It is not safe across threads: share one parser between the threads, or give each parser its own file object. Otherwise a parser can return the bytes of another record.
 
 ## Threads
 
@@ -99,4 +105,4 @@ Threads can share a parser, and an iterator too: each entry it yields goes to on
 
 One `abi3` wheel covers CPython 3.10 and newer. Free-threaded CPython 3.14 (`python3.14t`) has its own `cp314t` wheel.
 
-On another platform, install from a checkout with `pip install -e .`. This needs a Rust compiler and a recent pip.
+On another platform, `pip install mft` builds the package from source, which needs a Rust compiler and a recent pip.
